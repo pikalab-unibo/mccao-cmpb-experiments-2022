@@ -1,10 +1,15 @@
+import re
 from typing import Callable
-
 import numpy as np
 from psyki.logic.datalog import DatalogFormula, Expression
 from psyki.logic.datalog.grammar import optimize_datalog_formula
 from tensorflow.keras import Input, Model
 from tensorflow.keras.layers import Dense, Dropout
+
+
+def string_var_compliant(string: str) -> str:
+    string = re.sub('[^A-Za-z0-9 ]+', '', string).capitalize()
+    return re.sub(r'[ ]([a-z])', lambda match: match.group(1).capitalize(), string).replace(' ', '')
 
 
 def create_nn(input_size: int = 815, neurons_per_layer=None) -> Model:

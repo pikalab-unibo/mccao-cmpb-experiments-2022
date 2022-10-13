@@ -1,8 +1,9 @@
 # Generable file exclded
 *.h5
-users*.csv
+user*.csv
 *dataset*.csv
 *rules*.csv
+0*.csv
 
 # IDE
 .idea

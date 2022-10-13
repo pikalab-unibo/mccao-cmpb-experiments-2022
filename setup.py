@@ -1,39 +1,56 @@
 import distutils.cmd
 import random
-import sys
 from distutils.core import setup
+from os import system
 import numpy as np
 import pandas as pd
+from pandas import Series
 from psyki.logic.datalog.grammar.adapters.tuppy import prolog_to_datalog
 from psyki.logic.prolog.grammar.adapters.tuppy import file_to_prolog
 from setuptools import find_packages
-from resources.dataset import PATH as DATASET_PATH, get_feature_mapping
+from resources.dataset import PATH as DATASET_PATH
 from resources.models import PATH as MODEL_PATH
 from resources.rules import PATH as RULES_PATH
 from resources.prescriptions import PATH as PRESCRIPTION_PATH
-from utils import create_nn, formula_to_callable, formulae_to_callable
+from utils import create_nn, formulae_to_callable, string_var_compliant
 
 EPOCHS: int = 10
+
+
+class DownloadDatasets(distutils.cmd.Command):
+
+    user_options = []
+
+    def initialize_options(self) -> None:
+        pass
+
+    def finalize_options(self) -> None:
+        pass
+
+    def run(self) -> None:
+        system('curl -o culinary_db.zip --url https://cosylab.iiitd.edu.in/culinarydb/static/data/CulinaryDB.zip')
+        system('unzip culinary_db.zip -d ' + str(DATASET_PATH))
+        system('rm -rfd culinary_db.zip')
 
 
 class GenerateUsersScores(distutils.cmd.Command):
     description = 'generate a csv file with the users\' scores'
     user_options = [('file=', 'f', 'output file name (default is users_scores)'),
                     # ('seed=', 's', 'seed for reproducibility, (default is 0)'),
-                    ('ingredient=', 'i', 'file name to get all ingredients (default is recipes)'),
                     ('hints=', 'h', 'file name of users\' ingredient preferences (default users_preferences'),
                     ('min=', 'm', 'minimum value of a preference, (default is -1'),
                     ('max=', 'M', 'maximum value of a preference, (default is 1')]
     dataset_path = DATASET_PATH
-    default_output_file_name: str = 'users_scores'
-    default_hints_file: str = 'users_preferences'
-    default_ingredient: str = 'recipes'
+    default_output_file_name: str = 'user_scores'
+    default_hints_file: str = 'user_preferences'
+    default_ingredient: str = '02_Ingredients' # 'recipes'
     default_min: float = -1.
     default_max: float = 1.
 
     def initialize_options(self) -> None:
         self.file = self.default_output_file_name
-        self.ingredient = self.default_ingredient
+        self.ingredients = '02_Ingredients'
+        self.compound_ingredients = '03_Compound_Ingredients'
         self.hints = self.default_hints_file
         self.min = self.default_min
         self.max = self.default_max
@@ -43,29 +60,32 @@ class GenerateUsersScores(distutils.cmd.Command):
         self.max = float(self.max)
         self.file = self.file
         self.hints = self.hints
-        self.ingredient = self.ingredient
+        self.ingredients = self.ingredients
 
     def run(self) -> None:
         from numpy import arange
         from pandas import read_csv, DataFrame
 
-        ingredient_list = read_csv(self.dataset_path / (self.ingredient + '.csv')).columns
+        ingredients = get_ingredients([self.ingredients, self.compound_ingredients])
         users_preferences = read_csv(self.dataset_path / (self.hints + '.csv'))
-        ingredient_sublist = users_preferences.columns
-        ingredient_scores = DataFrame(0., index=arange(len(users_preferences.index)), columns=ingredient_list)
+        ingredients_sublist = users_preferences.columns
+        ingredients_sublist = sorted([string_var_compliant(ingredient) for ingredient in ingredients_sublist])
+        ingredients_scores = DataFrame(0., index=arange(len(users_preferences.index)), columns=ingredients)
         for j, user_preferences in users_preferences.iterrows():
             for i, score in enumerate(user_preferences):
-                if ingredient_sublist[i] in ingredient_list:
-                    ingredient_scores.at[j, ingredient_sublist[i]] = score
-        ingredient_scores.to_csv(self.dataset_path / (self.file + '.csv'), index=False)
+                if string_var_compliant(ingredients_sublist[i]) in ingredients:
+                    ingredients_scores.at[j, ingredients_sublist[i]] = score
+        ingredients_scores.to_csv(self.dataset_path / (self.file + '.csv'), index=False)
 
 
 class GenerateDataset(distutils.cmd.Command):
     description = 'generate the labeled dataset'
     user_options = []
     dataset_path = DATASET_PATH
-    recipes = 'recipes'
-    users = 'users_scores'
+    ingredients = '02_Ingredients'
+    compound_ingredients = '03_Compound_Ingredients'
+    recipes = '04_Recipe-Ingredients_Aliases'
+    users = 'user_scores'
     seed = 0
 
     def initialize_options(self) -> None:
@@ -78,14 +98,22 @@ class GenerateDataset(distutils.cmd.Command):
         from pandas import read_csv, DataFrame
 
         random.seed(self.seed)
+        ingredients_list = get_ingredients([self.ingredients, self.compound_ingredients])
+        ingredients = get_ingredients_id_map([self.ingredients, self.compound_ingredients])
         recipes = read_csv(self.dataset_path / (self.recipes + '.csv'))
+        matrix_recipes_ingredients = np.zeros(shape=(len(set(recipes.iloc[:, 0])), len(ingredients)))
+        for i, recipe in enumerate(set(recipes.iloc[:, 0])):
+            local_ingredients = list(recipes.loc[recipes['Recipe ID'] == recipe].iloc[:, -1])
+            local_ingredients = [string_var_compliant(ingredients[i]) for i in local_ingredients if i in ingredients.keys()]
+            for ingredient in local_ingredients:
+                matrix_recipes_ingredients[i, ingredients_list.index(ingredient)] = 1
+        recipes = DataFrame(matrix_recipes_ingredients, columns=ingredients_list)
         users = read_csv(self.dataset_path / (self.users + '.csv'))
-        rxu = recipes @ users.T
+        rxu = np.dot(recipes, users.T)
         random_choise = DataFrame([random.random() > 0.95 for _ in range(rxu.shape[0])])
-        labels = ((rxu > rxu.mean()) | ((rxu >= 0) & random_choise)).astype(int)
+        labels = ((rxu > rxu.mean()) | ((rxu >= 1) & random_choise)).astype(int)
         dataset = recipes.join(labels)
         dataset.columns = list(recipes.columns) + list(['target', ])
-        # dataset = dataset.iloc[:, list(range(1, len(recipes.columns), 2)) + list([len(recipes.columns)])]
         dataset.to_csv(self.dataset_path / 'nn_dataset_furkan_user.csv', index=False)
 
 
@@ -93,8 +121,10 @@ class GenerateUsersPreferences(distutils.cmd.Command):
     description = 'generate a csv file with the users\' preferences'
     user_options = []
     dataset_path = DATASET_PATH
+    ingredients = '02_Ingredients'
+    compound_ingredients = '03_Compound_Ingredients'
     seed = 0
-    default_file: str = 'users_preferences'
+    default_file: str = 'user_preferences'
     min_n, max_n = -1., 1.
     min_v, max_v = 1., 10.
 
@@ -105,19 +135,32 @@ class GenerateUsersPreferences(distutils.cmd.Command):
         pass
 
     def run(self) -> None:
-        from pandas import DataFrame
+        from pandas import DataFrame, read_csv
         from resources.nutrition_styles import NUTRITION_STYLES, NUTRITION_USERS
+
+        def compare_series_with_var_string(items: Series, string: str) -> Series:
+            return Series([string_var_compliant(item) == string for item in items])
 
         # Furkan's data
         styles = NUTRITION_STYLES
         users = NUTRITION_USERS
 
-        columns = users['furkan']['preferences'].keys()
-        scores = []
+        ingredients = read_csv(self.dataset_path / (self.ingredients + '.csv'))
+        compound_ingredients = read_csv(self.dataset_path / (self.compound_ingredients + '.csv'))
+        scores = {}
         np.random.seed(self.seed)
-        for _, (min_limit, max_limit) in users['furkan']['preferences'].items():
-            scores.append(round(np.random.uniform(low=min_limit - 0.5, high=max_limit + 0.5)))
-        df = DataFrame([scores], columns=columns)
+        for key, (min_limit, max_limit) in users['furkan']['category_preferences'].items():
+            bool_filter = compare_series_with_var_string(ingredients['Category'], key)
+            local_ingredients = list(ingredients.loc[bool_filter].iloc[:, 0])
+            bool_filter = compare_series_with_var_string(compound_ingredients['Category'], key)
+            if any(bool_filter):
+                local_ingredients += list(compound_ingredients.loc[bool_filter].iloc[:, 0])
+            for ingredient in local_ingredients:
+                scores[string_var_compliant(ingredient)] = round(np.random.uniform(low=min_limit - 0.5, high=max_limit + 0.5))
+        for key, (min_limit, max_limit) in users['furkan']['ingredient_preferences'].items():
+            scores[string_var_compliant(key)] = round(np.random.uniform(low=min_limit - 0.5, high=max_limit + 0.5))
+        scores = dict(sorted(scores.items()))
+        df = DataFrame.from_records([scores])
         df = (df - self.min_v) * (self.max_n - self.min_n) / (self.max_v - self.min_v) + self.min_n
         df.to_csv(self.dataset_path / (self.default_file + '.csv'), index=False)
 
@@ -201,9 +244,10 @@ class ProposeRecipes(distutils.cmd.Command):
     dataset_path = DATASET_PATH
     rules_path = RULES_PATH
     prescriptions_path = PRESCRIPTION_PATH
-    prescriptions_name = 'day1-dinner.csv'
+    prescriptions_name = 'nutrition-plan-lunch.csv'
     user_preferences = 'furkan_rules.csv'
     dataset_name = 'recipes.csv'
+    recipes_data = 'recipes_full_data.csv'
 
     def initialize_options(self) -> None:
         pass
@@ -287,6 +331,24 @@ def data_to_struct(data: pd.Series):
     return struct(head, terms)
 
 
+def get_ingredients(files: list[str]):
+    from pandas import read_csv
+    ingredients = []
+    for file in files:
+        ingredients += list(read_csv(DATASET_PATH / (file + '.csv')).iloc[:, 0])
+    return sorted([string_var_compliant(ingredient) for ingredient in ingredients])
+
+
+def get_ingredients_id_map(files: list[str]):
+    from pandas import read_csv
+    ingredients, indices = [], []
+    for file in files:
+        df = read_csv(DATASET_PATH / (file + '.csv'))
+        ingredients += list(df.iloc[:, 0])
+        indices += list(df['Entity ID']) if 'Entity ID' in df.columns else list(df['entity_id'])
+    return {k: v for k, v in zip(indices, ingredients)}
+
+
 def print_progress_bar(iteration, total, prefix='', suffix='', decimals=3, length=100, fill='█', print_end="\r"):
     """
     Call in a loop to create terminal progress bar
@@ -322,6 +384,7 @@ setup(
     zip_safe=False,
     platforms="Independant",
     cmdclass={
+        'download_datasets': DownloadDatasets,
         'generate_users_scores': GenerateUsersScores,
         'generate_users_preferences': GenerateUsersPreferences,
         'generate_dataset': GenerateDataset,
