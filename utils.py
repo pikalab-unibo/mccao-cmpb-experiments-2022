@@ -8,7 +8,8 @@ from tensorflow.keras.layers import Dense, Dropout
 
 
 def string_var_compliant(string: str) -> str:
-    string = re.sub('[^A-Za-z0-9 ]+', '', string).capitalize()
+    string = re.sub('[^A-Za-z0-9 ]+', '', string)
+    string = string[0].upper() + string[1:]
     return re.sub(r'[ ]([a-z])', lambda match: match.group(1).capitalize(), string).replace(' ', '')
 
 
@@ -53,4 +54,3 @@ def formula_to_callable(formula: DatalogFormula) -> Callable:
 def formulae_to_callable(formulae: list[DatalogFormula]) -> Callable:
     callables = [formula_to_callable(f) for f in formulae]
     return lambda x: np.any([f(x) for f in callables], axis=0)
-    # return callables[0]

@@ -1,5 +1,6 @@
 import distutils.cmd
 import random
+import sys
 from distutils.core import setup
 from os import system
 import numpy as np
@@ -43,7 +44,6 @@ class GenerateUsersScores(distutils.cmd.Command):
     dataset_path = DATASET_PATH
     default_output_file_name: str = 'user_scores'
     default_hints_file: str = 'user_preferences'
-    default_ingredient: str = '02_Ingredients' # 'recipes'
     default_min: float = -1.
     default_max: float = 1.
 
@@ -101,7 +101,7 @@ class GenerateDataset(distutils.cmd.Command):
         ingredients_list = get_ingredients([self.ingredients, self.compound_ingredients])
         ingredients = get_ingredients_id_map([self.ingredients, self.compound_ingredients])
         recipes = read_csv(self.dataset_path / (self.recipes + '.csv'))
-        matrix_recipes_ingredients = np.zeros(shape=(len(set(recipes.iloc[:, 0])), len(ingredients)))
+        matrix_recipes_ingredients = np.zeros(shape=(len(set(recipes.iloc[:, 0])), len(ingredients_list)))
         for i, recipe in enumerate(set(recipes.iloc[:, 0])):
             local_ingredients = list(recipes.loc[recipes['Recipe ID'] == recipe].iloc[:, -1])
             local_ingredients = [string_var_compliant(ingredients[i]) for i in local_ingredients if i in ingredients.keys()]
@@ -238,6 +238,32 @@ class ExtractRules(distutils.cmd.Command):
                 file.write(pretty_clause(rule) + '.\n')
 
 
+class GenerateCommonKB(distutils.cmd.Command):
+
+    user_options = []
+    ingredients = '02_Ingredients'
+    compound_ingredients = '03_Compound_Ingredients'
+
+    def initialize_options(self) -> None:
+        pass
+
+    def finalize_options(self) -> None:
+        pass
+
+    def run(self) -> None:
+        kb = ''
+        ingredients = get_ingredients([self.ingredients, self.compound_ingredients])
+        categories_ingredients = get_categories_ingredients_map([self.ingredients, self.compound_ingredients])
+        for k, vs in categories_ingredients.items():
+            k = string_var_compliant(k)
+            k = k[0].lower() + k[1:]
+            for v in vs:
+                kb += k + '(' + ', '.join(ingredients) + ') :-\n\t' + v + ' > 0.5.\n'
+            kb += '\n'
+        with open(RULES_PATH / 'kb.csv', "w") as file:
+            file.write(kb)
+
+
 class ProposeRecipes(distutils.cmd.Command):
     description = 'For the moment just print the number of recipes satisfying both user preferences and prescriptions'
     user_options = []
@@ -248,6 +274,7 @@ class ProposeRecipes(distutils.cmd.Command):
     user_preferences = 'furkan_rules.csv'
     dataset_name = 'recipes.csv'
     recipes_data = 'recipes_full_data.csv'
+    kb = 'kb.csv'
 
     def initialize_options(self) -> None:
         pass
@@ -260,12 +287,16 @@ class ProposeRecipes(distutils.cmd.Command):
 
         data = read_csv(self.dataset_path / self.dataset_name).astype(int)
         user_preferences_theory = file_to_prolog(self.rules_path / self.user_preferences)
+        sys.setrecursionlimit(2000)
         user_preferences_formulae = prolog_to_datalog(user_preferences_theory)
         user_preferences_formulae = [f for f in user_preferences_formulae if f.lhs.arg.last.name == 'positive']
         preferences_filters = formulae_to_callable(user_preferences_formulae)
 
+        kb = file_to_prolog(self.rules_path / self.kb)
+        kb_formulae = prolog_to_datalog(kb)
         prescriptions_theory = file_to_prolog(self.prescriptions_path / self.prescriptions_name)
         prescriptions_formulae = prolog_to_datalog(prescriptions_theory)
+        prescriptions_formulae = kb_formulae + prescriptions_formulae
         prescriptions_filters = formulae_to_callable(prescriptions_formulae)
 
         preferred_recipes = data[data.apply(preferences_filters, axis=1)]
@@ -275,51 +306,6 @@ class ProposeRecipes(distutils.cmd.Command):
         print("Recipes accepted according to user's preferences: " + str(preferred_recipes.shape[0]))
         print("Recipes compliant with prescriptions: " + str(prescriptions_recipes.shape[0]))
         print("Recipes compliant to both prescriptions and user's preferences: " + str(preferred_and_prescribed_recipes.shape[0]))
-
-
-class InjectRules(distutils.cmd.Command):
-    description = 'create and train a NN on Furkan dataset using the extracted rules'
-    user_options = []
-    rules_path = RULES_PATH
-    model_path = MODEL_PATH
-    dataset_path = DATASET_PATH
-    dataset_name = 'nn_dataset_furkan_user'
-    seed = 0
-    n_epochs = EPOCHS
-    batch_size = 32
-
-    def initialize_options(self) -> None:
-        pass
-
-    def finalize_options(self) -> None:
-        pass
-
-    def run(self) -> None:
-        from pandas import read_csv
-        from sklearn.model_selection import train_test_split
-        from tensorflow.python.framework.random_seed import set_seed
-        from psyki.ski import Injector
-
-        set_seed(self.seed)
-        dataset = read_csv(self.dataset_path / (self.dataset_name + '.csv')).astype(int)
-        feature_mapping = {feature.capitalize(): i for i, feature in enumerate(dataset.columns)}
-        train, test = train_test_split(dataset, train_size=2 / 3, random_state=self.seed, stratify=dataset.iloc[:, -1])
-        input_size = dataset.shape[1] - 1
-        network = create_nn(input_size)
-        injector = Injector.kins(network, feature_mapping)
-        print('Retrieve Prolog theory')
-        prolog_theory = file_to_prolog(self.rules_path / 'furkan_rules.csv')
-        print('Convert to Datalog')
-        knowledge = prolog_to_datalog(prolog_theory)
-        print('Injection')
-        new_predictor = injector.inject(knowledge)
-        new_predictor.compile(optimizer='adam', metrics='accuracy', loss='binary_crossentropy')
-        print('Training')
-        new_predictor.fit(train.iloc[:, :-1], train.iloc[:, -1:], epochs=self.n_epochs, batch_size=self.batch_size)
-        print('Evaluate')
-        loss, accuracy = new_predictor.evaluate(test.iloc[:, :-1], test.iloc[:, -1:])
-        print('Accuracy: ' + str(accuracy))
-        network.save(self.model_path / ('furkan_network_with_injection' + '.h5'))
 
 
 def data_to_struct(data: pd.Series):
@@ -335,8 +321,10 @@ def get_ingredients(files: list[str]):
     from pandas import read_csv
     ingredients = []
     for file in files:
-        ingredients += list(read_csv(DATASET_PATH / (file + '.csv')).iloc[:, 0])
-    return sorted([string_var_compliant(ingredient) for ingredient in ingredients])
+        new_ingredients = [string_var_compliant(i) for i in list(read_csv(DATASET_PATH / (file + '.csv')).iloc[:, 0])]
+        new_ingredients = [i if i not in ingredients else 'Compound' + i for i in new_ingredients]
+        ingredients += list(set(new_ingredients))
+    return sorted(ingredients)
 
 
 def get_ingredients_id_map(files: list[str]):
@@ -344,35 +332,34 @@ def get_ingredients_id_map(files: list[str]):
     ingredients, indices = [], []
     for file in files:
         df = read_csv(DATASET_PATH / (file + '.csv'))
-        ingredients += list(df.iloc[:, 0])
+        new_ingredients = [string_var_compliant(i) for i in list(df.iloc[:, 0])]
+        new_ingredients = [i if i not in ingredients else 'Compound' + i for i in new_ingredients]
+        ingredients += new_ingredients
         indices += list(df['Entity ID']) if 'Entity ID' in df.columns else list(df['entity_id'])
+    ingredients = [string_var_compliant(ingredient) for ingredient in ingredients]
     return {k: v for k, v in zip(indices, ingredients)}
 
 
-def print_progress_bar(iteration, total, prefix='', suffix='', decimals=3, length=100, fill='█', print_end="\r"):
-    """
-    Call in a loop to create terminal progress bar
-    @params:
-        iteration   - Required  : current iteration (Int)
-        total       - Required  : total iterations (Int)
-        prefix      - Optional  : prefix string (Str)
-        suffix      - Optional  : suffix string (Str)
-        decimals    - Optional  : positive number of decimals in percent complete (Int)
-        length      - Optional  : character length of bar (Int)
-        fill        - Optional  : bar fill character (Str)
-        printEnd    - Optional  : end character (e.g. "\r", "\r\n") (Str)
-    """
-    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
-    filledLength = int(length * iteration // total)
-    bar = fill * filledLength + '-' * (length - filledLength)
-    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end=print_end)
-    # Print New Line on Complete
-    if iteration == total:
-        print()
+def get_categories_ingredients_map(files: list[str]):
+    from pandas import read_csv
+    categories_ingredients: dict[str:list[str]] = {}
+    for file in files:
+        df = read_csv(DATASET_PATH / (file + '.csv'))
+        new_categories = list(set(df['Category']))
+        for category in new_categories:
+            new_ingredients = list(df.loc[df['Category'] == category].iloc[:, 0])
+            new_ingredients = [string_var_compliant(i) for i in new_ingredients]
+            if category in categories_ingredients.keys():
+                ingredients = categories_ingredients[category]
+                new_ingredients = [i if i in ingredients else 'Compound' + i for i in new_ingredients]
+                categories_ingredients[category] = ingredients + new_ingredients
+            else:
+                categories_ingredients[category] = new_ingredients
+    return categories_ingredients
 
 
 setup(
-    name='scripts',  # Required
+    name='cmbp-experiments',  # Required
     description='Script to work with datasets and SKE/SKI for Expectation',
     license='Apache 2.0 License',
     long_description_content_type='text/markdown',
@@ -390,7 +377,7 @@ setup(
         'generate_dataset': GenerateDataset,
         'build_and_train_nn': TrainNN,
         'extract_rules': ExtractRules,
+        'generate_common_kb': GenerateCommonKB,
         'propose_recipes': ProposeRecipes,
-        'inject_rules': InjectRules,
     },
 )
