@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from pandas import Series
 from psyki.logic.datalog.grammar.adapters.tuppy import prolog_to_datalog
-from psyki.logic.prolog.grammar.adapters.tuppy import file_to_prolog
+from psyki.logic.prolog.grammar.adapters.tuppy import file_to_prolog, text_to_prolog
 from setuptools import find_packages
 from resources.dataset import PATH as DATASET_PATH
 from resources.models import PATH as MODEL_PATH
@@ -156,7 +156,11 @@ class GenerateUsersPreferences(distutils.cmd.Command):
             if any(bool_filter):
                 local_ingredients += list(compound_ingredients.loc[bool_filter].iloc[:, 0])
             for ingredient in local_ingredients:
-                scores[string_var_compliant(ingredient)] = round(np.random.uniform(low=min_limit - 0.5, high=max_limit + 0.5))
+                score = round(np.random.uniform(low=min_limit - 0.5, high=max_limit + 0.5))
+                if string_var_compliant(ingredient) in scores.keys():
+                    scores[string_var_compliant('Compound' + ingredient)] = score
+                else:
+                    scores[string_var_compliant(ingredient)] = score
         for key, (min_limit, max_limit) in users['furkan']['ingredient_preferences'].items():
             scores[string_var_compliant(key)] = round(np.random.uniform(low=min_limit - 0.5, high=max_limit + 0.5))
         scores = dict(sorted(scores.items()))
@@ -270,9 +274,9 @@ class ProposeRecipes(distutils.cmd.Command):
     dataset_path = DATASET_PATH
     rules_path = RULES_PATH
     prescriptions_path = PRESCRIPTION_PATH
-    prescriptions_name = 'nutrition-plan-lunch.csv'
+    prescriptions_name = 'day1-dinner.csv'
     user_preferences = 'furkan_rules.csv'
-    dataset_name = 'recipes.csv'
+    dataset_name = 'nn_dataset_furkan_user.csv'
     recipes_data = 'recipes_full_data.csv'
     kb = 'kb.csv'
 
@@ -285,19 +289,21 @@ class ProposeRecipes(distutils.cmd.Command):
     def run(self) -> None:
         from pandas import read_csv
 
-        data = read_csv(self.dataset_path / self.dataset_name).astype(int)
+        data = read_csv(self.dataset_path / self.dataset_name).astype(int).iloc[:, :-1]
         user_preferences_theory = file_to_prolog(self.rules_path / self.user_preferences)
         sys.setrecursionlimit(2000)
+
+        with open(self.rules_path / self.kb, 'r') as file:
+            kb = file.read()
+        with open(self.prescriptions_path / self.prescriptions_name, 'r') as file:
+            prescriptions = file.read()
+        prescriptions = text_to_prolog(kb + prescriptions)
+        prescriptions_formulae = prolog_to_datalog(prescriptions)
+        prescriptions_filters = formulae_to_callable(prescriptions_formulae)
+
         user_preferences_formulae = prolog_to_datalog(user_preferences_theory)
         user_preferences_formulae = [f for f in user_preferences_formulae if f.lhs.arg.last.name == 'positive']
         preferences_filters = formulae_to_callable(user_preferences_formulae)
-
-        kb = file_to_prolog(self.rules_path / self.kb)
-        kb_formulae = prolog_to_datalog(kb)
-        prescriptions_theory = file_to_prolog(self.prescriptions_path / self.prescriptions_name)
-        prescriptions_formulae = prolog_to_datalog(prescriptions_theory)
-        prescriptions_formulae = kb_formulae + prescriptions_formulae
-        prescriptions_filters = formulae_to_callable(prescriptions_formulae)
 
         preferred_recipes = data[data.apply(preferences_filters, axis=1)]
         prescriptions_recipes = data[data.apply(prescriptions_filters, axis=1)]
@@ -351,7 +357,7 @@ def get_categories_ingredients_map(files: list[str]):
             new_ingredients = [string_var_compliant(i) for i in new_ingredients]
             if category in categories_ingredients.keys():
                 ingredients = categories_ingredients[category]
-                new_ingredients = [i if i in ingredients else 'Compound' + i for i in new_ingredients]
+                new_ingredients = [i if i not in ingredients else 'Compound' + i for i in new_ingredients]
                 categories_ingredients[category] = ingredients + new_ingredients
             else:
                 categories_ingredients[category] = new_ingredients

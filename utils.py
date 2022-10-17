@@ -2,7 +2,7 @@ import re
 from typing import Callable
 import numpy as np
 from psyki.logic.datalog import DatalogFormula, Expression
-from psyki.logic.datalog.grammar import optimize_datalog_formula
+from psyki.logic.datalog.grammar import optimize_datalog_formula, Nary
 from tensorflow.keras import Input, Model
 from tensorflow.keras.layers import Dense, Dropout
 
@@ -27,19 +27,26 @@ def create_nn(input_size: int = 815, neurons_per_layer=None) -> Model:
     return network
 
 
-def formula_to_callable(formula: DatalogFormula) -> Callable:
+def formula_to_callable(formula: DatalogFormula, rules: dict[str: list[DatalogFormula]]) -> Callable:
+
+    def eval_element(x, clause):
+        if isinstance(clause, Expression):
+            return x[clause.lhs.name] > clause.rhs.value if clause.op == '>' else x[clause.lhs.name] <= clause.rhs.value
+        elif isinstance(clause, Nary):
+            return np.any([formula_to_callable(rule, rules)(x) for rule in rules[clause.name]], axis=0)
+
     optimize_datalog_formula(formula)
     rhs = formula.rhs
     if isinstance(rhs, Expression):
         if len(rhs.nary) > 0:
-            result: Callable = lambda x: np.all([x[clause.lhs.name.lower()] > clause.rhs.value if clause.op == '>' else x[clause.lhs.name.lower()] <= clause.rhs.value for clause in rhs.nary], axis=0)
+            result: Callable = lambda x: np.all([eval_element(x, clause) for clause in rhs.nary], axis=0)
         elif isinstance(rhs.lhs, Expression) and isinstance(rhs.rhs, Expression):
             e1, e2 = rhs.lhs, rhs.rhs
             result_e1: Callable = formula_to_callable(e1)
             result_e2: Callable = formula_to_callable(e2)
             result: Callable = lambda x: np.all([result_e1(x), result_e2(x)], axis=0)
         else:
-            result: Callable = lambda x: x[rhs.lhs.name.lower()] > rhs.rhs.value if rhs.op == '>' else x[rhs.lhs.name.lower()] <= rhs.rhs.value
+            result: Callable = lambda x: eval_element(x, rhs)
     else:
         if isinstance(formula.lhs, Expression) and isinstance(formula.rhs, Expression):
             e1, e2 = formula.lhs, formula.rhs
@@ -47,10 +54,20 @@ def formula_to_callable(formula: DatalogFormula) -> Callable:
             result_e2: Callable = formula_to_callable(e2)
             result: Callable = lambda x: np.all([result_e1(x), result_e2(x)], axis=0)
         else:
-            result: Callable = lambda x: x[formula.lhs.name.lower()] > formula.rhs.value if formula.op == '>' else x[formula.lhs.name.lower()] <= formula.rhs.value
+            result: Callable = lambda x: eval_element(x, formula)
     return result
 
 
 def formulae_to_callable(formulae: list[DatalogFormula]) -> Callable:
-    callables = [formula_to_callable(f) for f in formulae]
+    predicates = list(set([formula.lhs.predication for formula in formulae if formula.lhs.predication != 'target']))
+    kb = {}
+    for predicate in predicates:
+        for formula in formulae:
+            if formula.lhs.predication == predicate:
+                if predicate not in kb.keys():
+                    kb[predicate] = [formula]
+                else:
+                    kb[predicate] = kb[predicate] + [formula]
+    classification_formulae = list([formula for formula in formulae if formula.lhs.predication == 'target'])
+    callables = [formula_to_callable(f, kb) for f in classification_formulae]
     return lambda x: np.any([f(x) for f in callables], axis=0)
