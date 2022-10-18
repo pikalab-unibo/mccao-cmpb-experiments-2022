@@ -29,24 +29,24 @@ def create_nn(input_size: int = 815, neurons_per_layer=None) -> Model:
 
 def formula_to_callable(formula: DatalogFormula, rules: dict[str: list[DatalogFormula]]) -> Callable:
 
-    def eval_element(x, clause):
+    def eval_element(clause):
         if isinstance(clause, Expression):
-            return x[clause.lhs.name] > clause.rhs.value if clause.op == '>' else x[clause.lhs.name] <= clause.rhs.value
+            return lambda x: x[clause.lhs.name] > clause.rhs.value if clause.op == '>' else x[clause.lhs.name] <= clause.rhs.value
         elif isinstance(clause, Nary):
-            return np.any([formula_to_callable(rule, rules)(x) for rule in rules[clause.name]], axis=0)
+            return lambda x: np.any([formula_to_callable(rule, rules)(x) for rule in rules[clause.name]], axis=0)
 
     optimize_datalog_formula(formula)
     rhs = formula.rhs
     if isinstance(rhs, Expression):
         if len(rhs.nary) > 0:
-            result: Callable = lambda x: np.all([eval_element(x, clause) for clause in rhs.nary], axis=0)
+            result: Callable = lambda x: np.all([eval_element(clause)(x) for clause in rhs.nary], axis=0)
         elif isinstance(rhs.lhs, Expression) and isinstance(rhs.rhs, Expression):
             e1, e2 = rhs.lhs, rhs.rhs
             result_e1: Callable = formula_to_callable(e1)
             result_e2: Callable = formula_to_callable(e2)
             result: Callable = lambda x: np.all([result_e1(x), result_e2(x)], axis=0)
         else:
-            result: Callable = lambda x: eval_element(x, rhs)
+            result: Callable = eval_element(rhs)
     else:
         if isinstance(formula.lhs, Expression) and isinstance(formula.rhs, Expression):
             e1, e2 = formula.lhs, formula.rhs
@@ -54,7 +54,7 @@ def formula_to_callable(formula: DatalogFormula, rules: dict[str: list[DatalogFo
             result_e2: Callable = formula_to_callable(e2)
             result: Callable = lambda x: np.all([result_e1(x), result_e2(x)], axis=0)
         else:
-            result: Callable = lambda x: eval_element(x, formula)
+            result: Callable = eval_element(formula)
     return result
 
 

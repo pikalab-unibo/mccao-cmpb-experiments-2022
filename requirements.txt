@@ -1,5 +1,5 @@
 numpy~=1.23.3
 pandas~=1.5.0
-psyki~=0.2.2
+psyki~=0.2.3.dev1
 setuptools~=65.4.1
 tensorflow~=2.7.0

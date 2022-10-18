@@ -19,7 +19,7 @@ EPOCHS: int = 10
 
 
 class DownloadDatasets(distutils.cmd.Command):
-
+    description = 'download the datasets for the experiments'
     user_options = []
 
     def initialize_options(self) -> None:
@@ -35,12 +35,9 @@ class DownloadDatasets(distutils.cmd.Command):
 
 
 class GenerateUsersScores(distutils.cmd.Command):
-    description = 'generate a csv file with the users\' scores'
+    description = 'generate a file with the user\'s scores'
     user_options = [('file=', 'f', 'output file name (default is users_scores)'),
-                    # ('seed=', 's', 'seed for reproducibility, (default is 0)'),
-                    ('hints=', 'h', 'file name of users\' ingredient preferences (default users_preferences'),
-                    ('min=', 'm', 'minimum value of a preference, (default is -1'),
-                    ('max=', 'M', 'maximum value of a preference, (default is 1')]
+                    ('hints=', 'h', 'file name of users\' ingredient preferences (default users_preferences')]
     dataset_path = DATASET_PATH
     default_output_file_name: str = 'user_scores'
     default_hints_file: str = 'user_preferences'
@@ -79,7 +76,7 @@ class GenerateUsersScores(distutils.cmd.Command):
 
 
 class GenerateDataset(distutils.cmd.Command):
-    description = 'generate the labeled dataset'
+    description = 'generate the labeled dataset for a specific user'
     user_options = []
     dataset_path = DATASET_PATH
     ingredients = '02_Ingredients'
@@ -118,7 +115,7 @@ class GenerateDataset(distutils.cmd.Command):
 
 
 class GenerateUsersPreferences(distutils.cmd.Command):
-    description = 'generate a csv file with the users\' preferences'
+    description = 'generate a csv file with the user\'s preferences'
     user_options = []
     dataset_path = DATASET_PATH
     ingredients = '02_Ingredients'
@@ -136,15 +133,12 @@ class GenerateUsersPreferences(distutils.cmd.Command):
 
     def run(self) -> None:
         from pandas import DataFrame, read_csv
-        from resources.nutrition_styles import NUTRITION_STYLES, NUTRITION_USERS
+        from resources.nutrition_styles import NUTRITION_USERS
 
         def compare_series_with_var_string(items: Series, string: str) -> Series:
             return Series([string_var_compliant(item) == string for item in items])
 
-        # Furkan's data
-        styles = NUTRITION_STYLES
         users = NUTRITION_USERS
-
         ingredients = read_csv(self.dataset_path / (self.ingredients + '.csv'))
         compound_ingredients = read_csv(self.dataset_path / (self.compound_ingredients + '.csv'))
         scores = {}
@@ -170,7 +164,7 @@ class GenerateUsersPreferences(distutils.cmd.Command):
 
 
 class TrainNN(distutils.cmd.Command):
-    description = 'create and train a NN on Furkan dataset'
+    description = 'create and train a NN on the provided dataset'
     user_options = []
     dataset_path = DATASET_PATH
     model_path = MODEL_PATH
@@ -204,7 +198,7 @@ class TrainNN(distutils.cmd.Command):
 
 
 class ExtractRules(distutils.cmd.Command):
-    description = 'create and train a NN on Furkan dataset'
+    description = 'extract logic rules that describe the behaviour of the NN, i.e., the user\'s preferences'
     user_options = []
     seed = 0
     dataset_path = DATASET_PATH
@@ -243,7 +237,7 @@ class ExtractRules(distutils.cmd.Command):
 
 
 class GenerateCommonKB(distutils.cmd.Command):
-
+    description = 'create the predicates for food categories'
     user_options = []
     ingredients = '02_Ingredients'
     compound_ingredients = '03_Compound_Ingredients'
@@ -269,7 +263,7 @@ class GenerateCommonKB(distutils.cmd.Command):
 
 
 class ProposeRecipes(distutils.cmd.Command):
-    description = 'For the moment just print the number of recipes satisfying both user preferences and prescriptions'
+    description = 'for the moment just print the number of recipes satisfying both user preferences and prescriptions'
     user_options = []
     dataset_path = DATASET_PATH
     rules_path = RULES_PATH
@@ -277,7 +271,8 @@ class ProposeRecipes(distutils.cmd.Command):
     prescriptions_name = 'day1-dinner.csv'
     user_preferences = 'furkan_rules.csv'
     dataset_name = 'nn_dataset_furkan_user.csv'
-    recipes_data = 'recipes_full_data.csv'
+    recipes_data = '01_Recipe_Details.csv'
+    recipes_with_ingredients = '04_Recipe-Ingredients_Aliases.csv'
     kb = 'kb.csv'
 
     def initialize_options(self) -> None:
@@ -289,9 +284,11 @@ class ProposeRecipes(distutils.cmd.Command):
     def run(self) -> None:
         from pandas import read_csv
 
+        recipes = read_csv(self.dataset_path / self.recipes_data)
+        recipes_with_ingredients = list(set(read_csv(self.dataset_path / self.recipes_with_ingredients).iloc[:, 0]))
         data = read_csv(self.dataset_path / self.dataset_name).astype(int).iloc[:, :-1]
         user_preferences_theory = file_to_prolog(self.rules_path / self.user_preferences)
-        sys.setrecursionlimit(2000)
+        sys.setrecursionlimit(2000)  # because the number of ingredients is greater than 1000.
 
         with open(self.rules_path / self.kb, 'r') as file:
             kb = file.read()
@@ -307,11 +304,20 @@ class ProposeRecipes(distutils.cmd.Command):
 
         preferred_recipes = data[data.apply(preferences_filters, axis=1)]
         prescriptions_recipes = data[data.apply(prescriptions_filters, axis=1)]
-        preferred_and_prescribed_recipes = preferred_recipes[preferred_recipes.apply(prescriptions_filters, axis=1)]
+        preferred_and_prescribed_recipes = prescriptions_recipes[prescriptions_recipes.apply(preferences_filters, axis=1)]
 
-        print("Recipes accepted according to user's preferences: " + str(preferred_recipes.shape[0]))
+        print("\nRecipes accepted according to user's preferences: " + str(preferred_recipes.shape[0]))
         print("Recipes compliant with prescriptions: " + str(prescriptions_recipes.shape[0]))
         print("Recipes compliant to both prescriptions and user's preferences: " + str(preferred_and_prescribed_recipes.shape[0]))
+
+        map_id_num_ing = {k: v for k, v in zip(recipes_with_ingredients, data.T.sum())}
+        proposed_recipes_id = [recipes_with_ingredients[i] for i in preferred_and_prescribed_recipes.index]
+        titles = recipes.loc[recipes['Recipe ID'].isin(proposed_recipes_id)].iloc[:, :2]
+        titles['NumIngredients'] = [map_id_num_ing[i] for i in titles['Recipe ID']]
+        titles = titles.sort_values('NumIngredients', ascending=True).iloc[:10, :]
+        pd.set_option('display.max_columns', 10)
+        print('\n\nBest top recipes (compliant with preferences and prescriptions with minimum amount of ingredients)')
+        print(titles)
 
 
 def data_to_struct(data: pd.Series):
