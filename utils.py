@@ -1,10 +1,12 @@
 import re
 from typing import Callable
 import numpy as np
+import pandas as pd
 from psyki.logic.datalog import DatalogFormula, Expression
 from psyki.logic.datalog.grammar import optimize_datalog_formula, Nary
 from tensorflow.keras import Input, Model
 from tensorflow.keras.layers import Dense, Dropout
+from resources.dataset import PATH as DATASET_PATH
 
 
 def string_var_compliant(string: str) -> str:
@@ -71,3 +73,53 @@ def formulae_to_callable(formulae: list[DatalogFormula]) -> Callable:
     classification_formulae = list([formula for formula in formulae if formula.lhs.predication == 'target'])
     callables = [formula_to_callable(f, kb) for f in classification_formulae]
     return lambda x: np.any([f(x) for f in callables], axis=0)
+
+
+def data_to_struct(data: pd.Series):
+    from tuprolog.core import numeric, var, struct
+
+    head = 'target'
+    terms = [numeric(item) for item in data]
+    terms.append(var('X'))
+    return struct(head, terms)
+
+
+def get_ingredients(files: list[str]):
+    from pandas import read_csv
+    ingredients = []
+    for file in files:
+        new_ingredients = [string_var_compliant(i) for i in list(read_csv(DATASET_PATH / file).iloc[:, 0])]
+        new_ingredients = [i if i not in ingredients else 'Compound' + i for i in new_ingredients]
+        ingredients += list(set(new_ingredients))
+    return sorted(ingredients)
+
+
+def get_ingredients_id_map(files: list[str]):
+    from pandas import read_csv
+    ingredients, indices = [], []
+    for file in files:
+        df = read_csv(DATASET_PATH / file)
+        new_ingredients = [string_var_compliant(i) for i in list(df.iloc[:, 0])]
+        new_ingredients = [i if i not in ingredients else 'Compound' + i for i in new_ingredients]
+        ingredients += new_ingredients
+        indices += list(df['Entity ID']) if 'Entity ID' in df.columns else list(df['entity_id'])
+    ingredients = [string_var_compliant(ingredient) for ingredient in ingredients]
+    return {k: v for k, v in zip(indices, ingredients)}
+
+
+def get_categories_ingredients_map(files: list[str]):
+    from pandas import read_csv
+    categories_ingredients: dict[str:list[str]] = {}
+    for file in files:
+        df = read_csv(DATASET_PATH / file)
+        new_categories = list(set(df['Category']))
+        for category in new_categories:
+            new_ingredients = list(df.loc[df['Category'] == category].iloc[:, 0])
+            new_ingredients = [string_var_compliant(i) for i in new_ingredients]
+            if category in categories_ingredients.keys():
+                ingredients = categories_ingredients[category]
+                new_ingredients = [i if i not in ingredients else 'Compound' + i for i in new_ingredients]
+                categories_ingredients[category] = ingredients + new_ingredients
+            else:
+                categories_ingredients[category] = new_ingredients
+    return categories_ingredients

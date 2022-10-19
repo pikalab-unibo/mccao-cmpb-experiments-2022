@@ -3,22 +3,33 @@ import random
 import sys
 from distutils.core import setup
 from os import system
-import numpy as np
-import pandas as pd
 from pandas import Series
 from psyki.logic.datalog.grammar.adapters.tuppy import prolog_to_datalog
 from psyki.logic.prolog.grammar.adapters.tuppy import file_to_prolog, text_to_prolog
 from setuptools import find_packages
-from resources.dataset import PATH as DATASET_PATH
 from resources.models import PATH as MODEL_PATH
-from resources.rules import PATH as RULES_PATH
-from resources.prescriptions import PATH as PRESCRIPTION_PATH
-from utils import create_nn, formulae_to_callable, string_var_compliant
+from resources.preferences import PATH as PREFERENCES_PATH
+from resources.prescriptions import PATH as PRESCRIPTIONS_PATH
+from utils import *
 
 EPOCHS: int = 10
+RECIPES_LIST_FILE = '01_Recipe_Details.csv'
+INGREDIENTS_FILE = '02_Ingredients.csv'
+COMPOUND_INGREDIENTS_FILE = '03_Compound_Ingredients.csv'
+RECIPES_FILE = '04_Recipe-Ingredients_Aliases.csv'
 
 
 class DownloadDatasets(distutils.cmd.Command):
+    """
+    First command to run.
+    It downloads a dataset of 4 files from cosylab.iiitd.edu.in:
+      - 01_Recipe_Details.csv               -> Recipe ID, Title, Source, Cuisine;
+      - 02_Ingredients.csv                  -> Aliased Ingredient Name, Ingredient Synonyms, Entity ID, Category;
+      - 03_Compound_Ingredients.csv         -> Compound Ingredient Name, Compound Ingredient Synonyms, entity_id,
+                                               Contituent Ingredient, Category; (yes, there is a misspelling)
+      - 04_Recipe-Ingredients_Aliases.csv   -> Recipe ID, Original Ingredient Name, Aliased Ingredient Name, Entity ID.
+    Files are stored in resources/dataset.
+    """
     description = 'download the datasets for the experiments'
     user_options = []
 
@@ -35,10 +46,16 @@ class DownloadDatasets(distutils.cmd.Command):
 
 
 class GenerateUsersScores(distutils.cmd.Command):
+    """
+    Second command to run.
+    It generates a synthetic dataset about a single user's preferences for specific ingredients and/or category.
+    To each ingredient/category listed in a configuration file is associated a uniform random value between an interval.
+    Values are in range from -1 (dislike) to 1 (like).
+    File is stored in resources/dataset.
+    """
     description = 'generate a file with the user\'s scores'
     user_options = [('file=', 'f', 'output file name (default is users_scores)'),
                     ('hints=', 'h', 'file name of users\' ingredient preferences (default users_preferences')]
-    dataset_path = DATASET_PATH
     default_output_file_name: str = 'user_scores'
     default_hints_file: str = 'user_preferences'
     default_min: float = -1.
@@ -46,8 +63,6 @@ class GenerateUsersScores(distutils.cmd.Command):
 
     def initialize_options(self) -> None:
         self.file = self.default_output_file_name
-        self.ingredients = '02_Ingredients'
-        self.compound_ingredients = '03_Compound_Ingredients'
         self.hints = self.default_hints_file
         self.min = self.default_min
         self.max = self.default_max
@@ -57,14 +72,13 @@ class GenerateUsersScores(distutils.cmd.Command):
         self.max = float(self.max)
         self.file = self.file
         self.hints = self.hints
-        self.ingredients = self.ingredients
 
     def run(self) -> None:
         from numpy import arange
         from pandas import read_csv, DataFrame
 
-        ingredients = get_ingredients([self.ingredients, self.compound_ingredients])
-        users_preferences = read_csv(self.dataset_path / (self.hints + '.csv'))
+        ingredients = get_ingredients([INGREDIENTS_FILE, COMPOUND_INGREDIENTS_FILE])
+        users_preferences = read_csv(DATASET_PATH / (self.hints + '.csv'))
         ingredients_sublist = users_preferences.columns
         ingredients_sublist = sorted([string_var_compliant(ingredient) for ingredient in ingredients_sublist])
         ingredients_scores = DataFrame(0., index=arange(len(users_preferences.index)), columns=ingredients)
@@ -72,54 +86,20 @@ class GenerateUsersScores(distutils.cmd.Command):
             for i, score in enumerate(user_preferences):
                 if string_var_compliant(ingredients_sublist[i]) in ingredients:
                     ingredients_scores.at[j, ingredients_sublist[i]] = score
-        ingredients_scores.to_csv(self.dataset_path / (self.file + '.csv'), index=False)
-
-
-class GenerateDataset(distutils.cmd.Command):
-    description = 'generate the labeled dataset for a specific user'
-    user_options = []
-    dataset_path = DATASET_PATH
-    ingredients = '02_Ingredients'
-    compound_ingredients = '03_Compound_Ingredients'
-    recipes = '04_Recipe-Ingredients_Aliases'
-    users = 'user_scores'
-    seed = 0
-
-    def initialize_options(self) -> None:
-        pass
-
-    def finalize_options(self) -> None:
-        pass
-
-    def run(self) -> None:
-        from pandas import read_csv, DataFrame
-
-        random.seed(self.seed)
-        ingredients_list = get_ingredients([self.ingredients, self.compound_ingredients])
-        ingredients = get_ingredients_id_map([self.ingredients, self.compound_ingredients])
-        recipes = read_csv(self.dataset_path / (self.recipes + '.csv'))
-        matrix_recipes_ingredients = np.zeros(shape=(len(set(recipes.iloc[:, 0])), len(ingredients_list)))
-        for i, recipe in enumerate(set(recipes.iloc[:, 0])):
-            local_ingredients = list(recipes.loc[recipes['Recipe ID'] == recipe].iloc[:, -1])
-            local_ingredients = [string_var_compliant(ingredients[i]) for i in local_ingredients if i in ingredients.keys()]
-            for ingredient in local_ingredients:
-                matrix_recipes_ingredients[i, ingredients_list.index(ingredient)] = 1
-        recipes = DataFrame(matrix_recipes_ingredients, columns=ingredients_list)
-        users = read_csv(self.dataset_path / (self.users + '.csv'))
-        rxu = np.dot(recipes, users.T)
-        random_choise = DataFrame([random.random() > 0.95 for _ in range(rxu.shape[0])])
-        labels = ((rxu > rxu.mean()) | ((rxu >= 1) & random_choise)).astype(int)
-        dataset = recipes.join(labels)
-        dataset.columns = list(recipes.columns) + list(['target', ])
-        dataset.to_csv(self.dataset_path / 'nn_dataset_furkan_user.csv', index=False)
+        ingredients_scores.to_csv(DATASET_PATH / (self.file + '.csv'), index=False)
 
 
 class GenerateUsersPreferences(distutils.cmd.Command):
+    """
+    Third command to run.
+    It generates a synthetic dataset about a single user's preferences for ingredients.
+    To each ingredient is associated a uniform random value between an interval based on the previous command output.
+    Values are in range from -1 (dislike) to 1 (like).
+    File is stored in resources/dataset.
+    """
     description = 'generate a csv file with the user\'s preferences'
     user_options = []
     dataset_path = DATASET_PATH
-    ingredients = '02_Ingredients'
-    compound_ingredients = '03_Compound_Ingredients'
     seed = 0
     default_file: str = 'user_preferences'
     min_n, max_n = -1., 1.
@@ -133,14 +113,14 @@ class GenerateUsersPreferences(distutils.cmd.Command):
 
     def run(self) -> None:
         from pandas import DataFrame, read_csv
-        from resources.nutrition_styles import NUTRITION_USERS
+        from resources.profiles import NUTRITION_USERS
 
         def compare_series_with_var_string(items: Series, string: str) -> Series:
             return Series([string_var_compliant(item) == string for item in items])
 
         users = NUTRITION_USERS
-        ingredients = read_csv(self.dataset_path / (self.ingredients + '.csv'))
-        compound_ingredients = read_csv(self.dataset_path / (self.compound_ingredients + '.csv'))
+        ingredients = read_csv(self.dataset_path / INGREDIENTS_FILE)
+        compound_ingredients = read_csv(self.dataset_path / COMPOUND_INGREDIENTS_FILE)
         scores = {}
         np.random.seed(self.seed)
         for key, (min_limit, max_limit) in users['furkan']['category_preferences'].items():
@@ -163,7 +143,57 @@ class GenerateUsersPreferences(distutils.cmd.Command):
         df.to_csv(self.dataset_path / (self.default_file + '.csv'), index=False)
 
 
+class GenerateDataset(distutils.cmd.Command):
+    """
+    Fourth command to run.
+    It generates a synthetic dataset about a single user's preferences for recipes.
+    This dataset is the one used to train a ML model, i.e. a neural network, to predict user's preferences.
+    Each row contains a recipe with a boolean value for all ingredients in the domain, plus an additional boolean value
+    for the class (0 dislike, 1 like).
+    File is stored in resources/dataset.
+    """
+    description = 'generate the labeled dataset for a specific user'
+    user_options = []
+    dataset_path = DATASET_PATH
+    users = 'user_scores'
+    seed = 0
+
+    def initialize_options(self) -> None:
+        pass
+
+    def finalize_options(self) -> None:
+        pass
+
+    def run(self) -> None:
+        from pandas import read_csv, DataFrame
+
+        random.seed(self.seed)
+        ingredients_list = get_ingredients([INGREDIENTS_FILE, COMPOUND_INGREDIENTS_FILE])
+        ingredients = get_ingredients_id_map([INGREDIENTS_FILE, COMPOUND_INGREDIENTS_FILE])
+        recipes = read_csv(self.dataset_path / RECIPES_FILE)
+        matrix_recipes_ingredients = np.zeros(shape=(len(set(recipes.iloc[:, 0])), len(ingredients_list)))
+        for i, recipe in enumerate(set(recipes.iloc[:, 0])):
+            local_ingredients = list(recipes.loc[recipes['Recipe ID'] == recipe].iloc[:, -1])
+            local_ingredients = [string_var_compliant(ingredients[i]) for i in local_ingredients if i in ingredients.keys()]
+            for ingredient in local_ingredients:
+                matrix_recipes_ingredients[i, ingredients_list.index(ingredient)] = 1
+        recipes = DataFrame(matrix_recipes_ingredients, columns=ingredients_list)
+        users = read_csv(self.dataset_path / (self.users + '.csv'))
+        rxu = np.dot(recipes, users.T)
+        random_choise = DataFrame([random.random() > 0.95 for _ in range(rxu.shape[0])])
+        labels = ((rxu > rxu.mean()) | ((rxu >= 1) & random_choise)).astype(int)
+        dataset = recipes.join(labels)
+        dataset.columns = list(recipes.columns) + list(['target', ])
+        dataset.to_csv(self.dataset_path / 'nn_dataset_furkan_user.csv', index=False)
+
+
 class TrainNN(distutils.cmd.Command):
+    """
+    Fifth command to run.
+    It generates and train a neural network upon the previous generated dataset.
+    At the end of the training the model is able to say if a recipe will be liked by the user or not with high accuracy.
+    The model is stored in resources/models.
+    """
     description = 'create and train a NN on the provided dataset'
     user_options = []
     dataset_path = DATASET_PATH
@@ -198,12 +228,18 @@ class TrainNN(distutils.cmd.Command):
 
 
 class ExtractRules(distutils.cmd.Command):
-    description = 'extract logic rules that describe the behaviour of the NN, i.e., the user\'s preferences'
+    """
+    Sixth command to run.
+    It generates symbolic logic preferences that describe the internal decision-making behaviour of the trained model.
+    Therefore, preferences describe the user's food preferences.
+    The file is stored in resources/preferences.
+    """
+    description = 'extract logic preferences that describe the behaviour of the NN, i.e., the user\'s preferences'
     user_options = []
     seed = 0
     dataset_path = DATASET_PATH
     model_path = MODEL_PATH
-    rules_path = RULES_PATH
+    rules_path = PREFERENCES_PATH
     simplify = False
     dataset_name = 'nn_dataset_furkan_user'
     mapping = {'negative': 0, 'positive': 1}
@@ -237,10 +273,13 @@ class ExtractRules(distutils.cmd.Command):
 
 
 class GenerateCommonKB(distutils.cmd.Command):
+    """
+    Seventh command to run.
+    It generates common knowledge base describing how ingredients and categories are related.
+    The file is stored in resources/prescriptions.
+    """
     description = 'create the predicates for food categories'
     user_options = []
-    ingredients = '02_Ingredients'
-    compound_ingredients = '03_Compound_Ingredients'
 
     def initialize_options(self) -> None:
         pass
@@ -250,29 +289,31 @@ class GenerateCommonKB(distutils.cmd.Command):
 
     def run(self) -> None:
         kb = ''
-        ingredients = get_ingredients([self.ingredients, self.compound_ingredients])
-        categories_ingredients = get_categories_ingredients_map([self.ingredients, self.compound_ingredients])
+        ingredients = get_ingredients([INGREDIENTS_FILE, COMPOUND_INGREDIENTS_FILE])
+        categories_ingredients = get_categories_ingredients_map([INGREDIENTS_FILE, COMPOUND_INGREDIENTS_FILE])
         for k, vs in categories_ingredients.items():
             k = string_var_compliant(k)
             k = k[0].lower() + k[1:]
             for v in vs:
                 kb += k + '(' + ', '.join(ingredients) + ') :-\n\t' + v + ' > 0.5.\n'
             kb += '\n'
-        with open(RULES_PATH / 'kb.csv', "w") as file:
+        with open(PRESCRIPTIONS_PATH / 'kb.csv', "w") as file:
             file.write(kb)
 
 
 class ProposeRecipes(distutils.cmd.Command):
+    """
+    Eightieth command to run.
+    It generates recipes to recommend to the user. Recipes are compliant to both user's preferences and prescriptions.
+    """
     description = 'for the moment just print the number of recipes satisfying both user preferences and prescriptions'
     user_options = []
     dataset_path = DATASET_PATH
-    rules_path = RULES_PATH
-    prescriptions_path = PRESCRIPTION_PATH
+    rules_path = PREFERENCES_PATH
+    prescriptions_path = PRESCRIPTIONS_PATH
     prescriptions_name = 'day1-dinner.csv'
     user_preferences = 'furkan_rules.csv'
     dataset_name = 'nn_dataset_furkan_user.csv'
-    recipes_data = '01_Recipe_Details.csv'
-    recipes_with_ingredients = '04_Recipe-Ingredients_Aliases.csv'
     kb = 'kb.csv'
 
     def initialize_options(self) -> None:
@@ -284,13 +325,13 @@ class ProposeRecipes(distutils.cmd.Command):
     def run(self) -> None:
         from pandas import read_csv
 
-        recipes = read_csv(self.dataset_path / self.recipes_data)
-        recipes_with_ingredients = list(set(read_csv(self.dataset_path / self.recipes_with_ingredients).iloc[:, 0]))
+        recipes = read_csv(self.dataset_path / RECIPES_LIST_FILE)
+        recipes_with_ingredients = list(set(read_csv(self.dataset_path / RECIPES_FILE).iloc[:, 0]))
         data = read_csv(self.dataset_path / self.dataset_name).astype(int).iloc[:, :-1]
         user_preferences_theory = file_to_prolog(self.rules_path / self.user_preferences)
         sys.setrecursionlimit(2000)  # because the number of ingredients is greater than 1000.
 
-        with open(self.rules_path / self.kb, 'r') as file:
+        with open(self.prescriptions_path / self.kb, 'r') as file:
             kb = file.read()
         with open(self.prescriptions_path / self.prescriptions_name, 'r') as file:
             prescriptions = file.read()
@@ -320,59 +361,9 @@ class ProposeRecipes(distutils.cmd.Command):
         print(titles)
 
 
-def data_to_struct(data: pd.Series):
-    from tuprolog.core import numeric, var, struct
-
-    head = 'target'
-    terms = [numeric(item) for item in data]
-    terms.append(var('X'))
-    return struct(head, terms)
-
-
-def get_ingredients(files: list[str]):
-    from pandas import read_csv
-    ingredients = []
-    for file in files:
-        new_ingredients = [string_var_compliant(i) for i in list(read_csv(DATASET_PATH / (file + '.csv')).iloc[:, 0])]
-        new_ingredients = [i if i not in ingredients else 'Compound' + i for i in new_ingredients]
-        ingredients += list(set(new_ingredients))
-    return sorted(ingredients)
-
-
-def get_ingredients_id_map(files: list[str]):
-    from pandas import read_csv
-    ingredients, indices = [], []
-    for file in files:
-        df = read_csv(DATASET_PATH / (file + '.csv'))
-        new_ingredients = [string_var_compliant(i) for i in list(df.iloc[:, 0])]
-        new_ingredients = [i if i not in ingredients else 'Compound' + i for i in new_ingredients]
-        ingredients += new_ingredients
-        indices += list(df['Entity ID']) if 'Entity ID' in df.columns else list(df['entity_id'])
-    ingredients = [string_var_compliant(ingredient) for ingredient in ingredients]
-    return {k: v for k, v in zip(indices, ingredients)}
-
-
-def get_categories_ingredients_map(files: list[str]):
-    from pandas import read_csv
-    categories_ingredients: dict[str:list[str]] = {}
-    for file in files:
-        df = read_csv(DATASET_PATH / (file + '.csv'))
-        new_categories = list(set(df['Category']))
-        for category in new_categories:
-            new_ingredients = list(df.loc[df['Category'] == category].iloc[:, 0])
-            new_ingredients = [string_var_compliant(i) for i in new_ingredients]
-            if category in categories_ingredients.keys():
-                ingredients = categories_ingredients[category]
-                new_ingredients = [i if i not in ingredients else 'Compound' + i for i in new_ingredients]
-                categories_ingredients[category] = ingredients + new_ingredients
-            else:
-                categories_ingredients[category] = new_ingredients
-    return categories_ingredients
-
-
 setup(
     name='cmbp-experiments',  # Required
-    description='Script to work with datasets and SKE/SKI for Expectation',
+    description='Integrating SKE into a food recommendation system, experiments.',
     license='Apache 2.0 License',
     long_description_content_type='text/markdown',
     author='Matteo Magnini',
