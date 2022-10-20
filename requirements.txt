@@ -4,3 +4,4 @@ psyki~=0.2.3.dev1
 setuptools~=65.4.1
 tensorflow~=2.7.0
 scikit-learn~=1.1.2
+psyke~=0.3.0

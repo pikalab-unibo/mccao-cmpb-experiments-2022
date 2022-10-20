@@ -8,6 +8,10 @@ from tensorflow.keras import Input, Model
 from tensorflow.keras.layers import Dense, Dropout
 from resources.dataset import PATH as DATASET_PATH
 
+DEFAULT_INPUT_LAYER = 16
+DEFAULT_HIDDEN_LAYER = 8
+DEFAULT_OUTPUT_LAYER = 1
+
 
 def string_var_compliant(string: str) -> str:
     string = re.sub('[^A-Za-z0-9 ]+', '', string)
@@ -15,14 +19,13 @@ def string_var_compliant(string: str) -> str:
     return re.sub(r'[ ]([a-z])', lambda match: match.group(1).capitalize(), string).replace(' ', '')
 
 
-def create_nn(input_size: int = 815, neurons_per_layer=None) -> Model:
+def create_nn(input_size, neurons_per_layer=None) -> Model:
     if neurons_per_layer is None:
-        neurons_per_layer = list([8, 4, 1])
+        neurons_per_layer = list([DEFAULT_INPUT_LAYER, DEFAULT_HIDDEN_LAYER, DEFAULT_OUTPUT_LAYER])
     input_layer = Input((input_size,))
     x = input_layer
     for neurons in neurons_per_layer[:-1]:
         x = Dense(neurons, activation='relu')(x)
-        x = Dropout(0.2)(x)
     x = Dense(neurons_per_layer[-1], activation='sigmoid')(x)
     network = Model(input_layer, x)
     network.compile(optimizer='adam', metrics='accuracy', loss='binary_crossentropy')
