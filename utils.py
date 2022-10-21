@@ -63,7 +63,7 @@ def formula_to_callable(formula: DatalogFormula, rules: dict[str: list[DatalogFo
     return result
 
 
-def formulae_to_callable(formulae: list[DatalogFormula]) -> Callable:
+def formulae_to_callables(formulae: list[DatalogFormula]) -> list[Callable]:
     predicates = list(set([formula.lhs.predication for formula in formulae if formula.lhs.predication != 'target']))
     kb = {}
     for predicate in predicates:
@@ -75,7 +75,7 @@ def formulae_to_callable(formulae: list[DatalogFormula]) -> Callable:
                     kb[predicate] = kb[predicate] + [formula]
     classification_formulae = list([formula for formula in formulae if formula.lhs.predication == 'target'])
     callables = [formula_to_callable(f, kb) for f in classification_formulae]
-    return lambda x: np.any([f(x) for f in callables], axis=0)
+    return callables
 
 
 def data_to_struct(data: pd.Series):
