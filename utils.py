@@ -5,7 +5,7 @@ import pandas as pd
 from psyki.logic.datalog import DatalogFormula, Expression
 from psyki.logic.datalog.grammar import optimize_datalog_formula, Nary
 from tensorflow.keras import Input, Model
-from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.layers import Dense
 from resources.dataset import PATH as DATASET_PATH
 
 DEFAULT_INPUT_LAYER = 16

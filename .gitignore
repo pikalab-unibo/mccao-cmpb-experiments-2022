@@ -5,6 +5,7 @@ user*.csv
 *dataset*.csv
 *rules*.csv
 0*.csv
+table*.csv
 
 # IDE
 .idea

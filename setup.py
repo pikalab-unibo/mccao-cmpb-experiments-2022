@@ -38,7 +38,7 @@ INGREDIENTS_FILE = '02_Ingredients.csv'
 COMPOUND_INGREDIENTS_FILE = '03_Compound_Ingredients.csv'
 RECIPES_FILE = '04_Recipe-Ingredients_Aliases.csv'
 USERS_STYLES = ['', 'vegan', 'sportive', 'unhealthy']
-PRESCRIPTIONS = ['day1-lunch', 'day1-dinner', 'day2-lunch', 'day2-dinner', 'day2-lunch', 'day2-dinner']
+PRESCRIPTIONS = ['day1-lunch', 'day1-dinner', 'day2-lunch', 'day2-dinner', 'day3-lunch', 'day3-dinner']
 USER_AND_STYLE_OPTIONS = [
     ('user=', 'u', 'user\'s nutrition profile ([1]/2/3)'),
     ('style=', 's', 'user\'s nutrition style ([1]/2/3/4)\n\t1 = no style\n\t2 = vegan\n\t3 = sportive\n\t4 = unhealthy')
@@ -48,6 +48,7 @@ PRESCRIPTION_OPTIONS = [
                            '\n\t3 = day 2 lunch\n\t4 = day 2 dinner\n\t5 = day 3 lunch\n\t6 = day 3 dinner')
 ]
 LOG_ADDITIONAL_INFO = False
+sys.setrecursionlimit(2000)  # because the number of ingredients is greater than 1000.
 
 
 class RunAll(distutils.cmd.Command):
@@ -334,7 +335,7 @@ class ExtractRules(distutils.cmd.Command):
 
     def run(self) -> None:
         set_seed(SEED)
-        dataset = read_csv(DATASET_PATH / ('dataset_' + self.user + self.style + '.csv')).astype(int)
+        dataset = read_csv(DATASET_PATH / ('dataset_' + self.user + self.style + '.csv')).astype(int).iloc[18000:22000, :]
         train, test = train_test_split(dataset, train_size=TRAIN_RATIO, random_state=SEED, stratify=dataset.iloc[:, -1])
         train['target'] = train['target'].apply(lambda x: 'positive' if x == 1 else 'negative')
         network = load_model(MODEL_PATH / ('network_' + self.user + self.style + '.h5'))
@@ -344,6 +345,14 @@ class ExtractRules(distutils.cmd.Command):
         with open(PREFERENCES_PATH / (self.user + self.style + '.csv'), 'w') as file:
             for rule in theory.clauses:
                 file.write(pretty_clause(rule) + '.\n')
+        user_preferences_formulae = prolog_to_datalog(theory)
+        user_preferences_formulae = [f for f in user_preferences_formulae if f.lhs.arg.last.name == 'positive']
+        preferences_filters = formulae_to_callables(user_preferences_formulae)
+        preferences_filter: Callable = lambda x: np.any([f(x) for f in preferences_filters], axis=0)
+        preferred_recipes = test[test.apply(preferences_filter, axis=1)]
+        true_liked_recipes = preferred_recipes[preferred_recipes['target'] == 1].shape[0]
+        result = DataFrame([true_liked_recipes / preferred_recipes.shape[0]])
+        result.to_csv(PREFERENCES_PATH / (self.user + self.style + '_accuracy.csv'), index_label=False, index=False, header=['accuracy'])
 
 
 class ProposeRecipes(distutils.cmd.Command):
@@ -375,7 +384,6 @@ class ProposeRecipes(distutils.cmd.Command):
         map_id_num_ing = {k: v for k, v in zip(recipes_with_ingredients, data.iloc[:, :-1].T.sum())}
         _, test = train_test_split(data, train_size=TRAIN_RATIO, random_state=SEED, stratify=data.iloc[:, -1])
         user_preferences_theory = file_to_prolog(PREFERENCES_PATH / (self.user + self.style + '.csv'))
-        sys.setrecursionlimit(2000)  # because the number of ingredients is greater than 1000.
 
         with open(PRESCRIPTIONS_PATH / self.kb, 'r') as file:
             kb = file.read()
@@ -404,7 +412,10 @@ class ProposeRecipes(distutils.cmd.Command):
             liked_and_prescribed = liked_and_prescribed.iloc[:MAX_PROPOSED_RECIPES_PER_PRESCRIPTION, :]
             print("Recipes compliant with prescription " + str(i + 1) + ": " + str(prescribed.shape[0]))
             d = liked_and_prescribed.shape[0]
-            n = liked_and_prescribed.loc[liked_and_prescribed['target'] == 1].shape[0]
+            if d > 0:
+                n = liked_and_prescribed.loc[liked_and_prescribed['target'] == 1].shape[0]
+            else:
+                n = 0
             print("Recipes compliant to both prescriptions and user's preferences: " + str(d))
             total_proposed_recipes.append(d)
             total_liked_recipes.append(n)
@@ -434,6 +445,71 @@ class ProposeRecipes(distutils.cmd.Command):
         result.to_csv(RESULTS_PATH / file_name, index_label=False, index=False, header=['proposed', 'liked', 'accuracy'])
 
 
+class ComputeStatistics(distutils.cmd.Command):
+    description = 'compute statistics upon the results'
+    user_options = []
+
+    def initialize_options(self) -> None:
+        pass
+
+    def finalize_options(self) -> None:
+        pass
+
+    def run(self) -> None:
+        # Generate latex code for a table summarising the accuracy of the neural networks per users
+        #
+        # users |   accuracy    |   rule_accuracy
+        # u1    |               |
+        # u2    |               |
+        # u3    |               |
+        results = 'users & net accuracy & rules accuracy\n'
+        all_stats = []
+        for u in range(1, 4):
+            for s in range(1, len(USERS_STYLES) + 1):
+                user = 'user_' + str(u)
+                style = USERS_STYLES[int(s) - 1]
+                net_data = pd.read_csv(MODEL_PATH / ('network_' + user + style + '.csv'))
+                rule_data = pd.read_csv(PREFERENCES_PATH / (user + style + '_accuracy.csv'))
+                accuracy = net_data.iloc[-1, -1]
+                rule_accuracy = rule_data.iloc[0, 0]
+                all_stats.append([round(accuracy, 4), round(rule_accuracy, 4)])
+                style = ' vanilla' if s == 1 else ' ' + style
+                results += ' & '.join([str(u) + style, str(round(accuracy, 4)), str(round(rule_accuracy, 4))]) + r'\\' + '\n'
+            results += r'\hline' + '\n'
+        stats = DataFrame(all_stats)
+        results += 'all & ' + str(round(stats.iloc[:, 0].mean(), 4)) + ' & ' + str(round(stats.iloc[:, 1].mean(), 4)) + r'\\' + '\n'
+        with open('table_net_rule_accuracy.csv', "w") as file:
+            file.write(results)
+
+        # Generate latex code for a table summarising the accuracy of the proposed recipes
+        #
+        # users |   d1 lunch    |   d1 dinner   |   d2 lunch    |   d2 dinner   |   d3 lunch    |   d3 dinner
+        # u1    |               |               |               |               |               |
+        # u2    |               |               |               |               |               |
+        # u3    |               |               |               |               |               |
+        results = 'users & ' + ' & '.join(PRESCRIPTIONS) + r'\\' + '\n' + r'\hline\hline' + '\n'
+        all_stats = []
+        for u in range(1, 4):
+            for s in range(1, len(USERS_STYLES) + 1):
+                user = 'user_' + str(u)
+                style = USERS_STYLES[int(s) - 1]
+                style2 = ' vanilla' if s == 1 else ' ' + style
+                results += str(u) + style2
+                partial_stats = []
+                for p in range(1, len(PRESCRIPTIONS) + 1):
+                    prescription = PRESCRIPTIONS[p - 1]
+                    accuracy = pd.read_csv(RESULTS_PATH / (user + style + '_' + prescription + '.csv')).iloc[-1, -1]
+                    results += ' & ' + str(round(accuracy, 4))
+                    partial_stats.append(round(accuracy, 4))
+                results += r'\\' + '\n'
+                all_stats.append(partial_stats)
+        stats = DataFrame(all_stats)
+        stats = stats.mean(axis=0)
+        results += 'all & ' + ' & '.join(str(round(x, 4)) for x in stats.tolist()) + r'\\' + '\n'
+        with open('table_propose_recipes_accuracy.csv', "w") as file:
+            file.write(results)
+
+
 setup(
     name='cmbp-experiments',  # Required
     description='Integrating SKE into a food recommendation system, experiments.',
@@ -456,5 +532,6 @@ setup(
         'build_and_train_nn': TrainNN,
         'extract_rules': ExtractRules,
         'propose_recipes': ProposeRecipes,
+        'compute_statistics': ComputeStatistics,
     },
 )

@@ -24,8 +24,8 @@ NUTRITION_STYLES = dict(
             BeverageAlcoholic=(1, 3),
             Bakery=(5, 7)),
         ingredient_preferences=dict(
-            milk=(6, 10),
-            egg=(6, 10),
+            Milk=(6, 10),
+            Egg=(6, 10),
         )
     ),
     unhealthy=dict(
