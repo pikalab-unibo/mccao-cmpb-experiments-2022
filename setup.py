@@ -26,6 +26,8 @@ from psyki.logic.prolog.grammar.adapters.tuppy import file_to_prolog, text_to_pr
 SEED = 0
 T = 1
 P = 0.05
+MAX_PROPOSED_RECIPES_PER_PRESCRIPTION = 20
+TRAIN_RATIO = 0.5
 FIRST_LAYER = 16
 HIDDEN_LAYER = 8
 OUTPUT_LAYER = 1
@@ -45,6 +47,7 @@ PRESCRIPTION_OPTIONS = [
     ('prescription=', 'p', 'prescription to satisfy ([1]/2/3/4/5/6)\n\t1 = day 1 lunch\n\t2 = day 1 dinner'
                            '\n\t3 = day 2 lunch\n\t4 = day 2 dinner\n\t5 = day 3 lunch\n\t6 = day 3 dinner')
 ]
+LOG_ADDITIONAL_INFO = False
 
 
 class RunAll(distutils.cmd.Command):
@@ -267,7 +270,7 @@ class GenerateDataset(distutils.cmd.Command):
         min_rxu = rxu.min()
         p = DataFrame([random.uniform(0, 1) for _ in range(rxu.shape[0])])
         x = DataFrame((rxu - min_rxu) / (max_rxu - min_rxu))
-        labels = ((rxu > np.quantile(rxu, 0.75)) * (DataFrame(rxu > 0) * x > p)).astype(int)  # np.log10(rxu.shape[0])
+        labels = ((rxu > np.quantile(rxu, 0.75)) + (DataFrame(rxu > 0) * x > p)).astype(int)  # np.log10(rxu.shape[0])
         dataset = recipes.join(labels)
         dataset.columns = list(recipes.columns) + list(['target', ])
         print('positive class: ' + str(dataset.loc[dataset['target'] == 1].shape[0]))
@@ -296,14 +299,16 @@ class TrainNN(distutils.cmd.Command):
     def run(self) -> None:
         set_seed(SEED)
         dataset = read_csv(DATASET_PATH / ('dataset_' + self.user + self.style + '.csv')).astype(int)
-        train, test = train_test_split(dataset, train_size=2/3, random_state=SEED, stratify=dataset.iloc[:, -1])
+        train, test = train_test_split(dataset, train_size=TRAIN_RATIO, random_state=SEED, stratify=dataset.iloc[:, -1])
         input_size = dataset.shape[1] - 1
         network = create_nn(input_size, self.neurons_per_layer)
         network.summary()
         network.fit(train.iloc[:, :-1], train.iloc[:, -1:], epochs=EPOCHS, batch_size=BATCH)
         loss, accuracy = network.evaluate(test.iloc[:, :-1], test.iloc[:, -1:])
         print('Accuracy on test set: ' + str(accuracy))
-        network.save(MODEL_PATH / ('network_' + self.user + self.style + '.h5'))
+        file_name = 'network_' + self.user + self.style
+        network.save(MODEL_PATH / (file_name + '.h5'))
+        DataFrame([[loss], [accuracy]]).T.to_csv(MODEL_PATH / (file_name + '.csv'), index_label=False, index=False, header=['loss', 'accuracy'])
 
 
 class ExtractRules(distutils.cmd.Command):
@@ -330,7 +335,7 @@ class ExtractRules(distutils.cmd.Command):
     def run(self) -> None:
         set_seed(SEED)
         dataset = read_csv(DATASET_PATH / ('dataset_' + self.user + self.style + '.csv')).astype(int)
-        train, test = train_test_split(dataset, train_size=2/3, random_state=SEED, stratify=dataset.iloc[:, -1])
+        train, test = train_test_split(dataset, train_size=TRAIN_RATIO, random_state=SEED, stratify=dataset.iloc[:, -1])
         train['target'] = train['target'].apply(lambda x: 'positive' if x == 1 else 'negative')
         network = load_model(MODEL_PATH / ('network_' + self.user + self.style + '.h5'))
         network.compile(optimizer='adam', metrics='accuracy', loss='binary_crossentropy')
@@ -366,7 +371,9 @@ class ProposeRecipes(distutils.cmd.Command):
         prescription_file = self.prescription + '.csv'
         recipes = read_csv(DATASET_PATH / RECIPES_LIST_FILE)
         recipes_with_ingredients = list(set(read_csv(DATASET_PATH / RECIPES_FILE).iloc[:, 0]))
-        data = read_csv(DATASET_PATH / ('dataset_' + self.user + self.style + '.csv')).astype(int).iloc[:, :-1]
+        data = read_csv(DATASET_PATH / ('dataset_' + self.user + self.style + '.csv')).astype(int)
+        map_id_num_ing = {k: v for k, v in zip(recipes_with_ingredients, data.iloc[:, :-1].T.sum())}
+        _, test = train_test_split(data, train_size=TRAIN_RATIO, random_state=SEED, stratify=data.iloc[:, -1])
         user_preferences_theory = file_to_prolog(PREFERENCES_PATH / (self.user + self.style + '.csv'))
         sys.setrecursionlimit(2000)  # because the number of ingredients is greater than 1000.
 
@@ -381,27 +388,50 @@ class ProposeRecipes(distutils.cmd.Command):
         user_preferences_formulae = [f for f in user_preferences_formulae if f.lhs.arg.last.name == 'positive']
         preferences_filters = formulae_to_callables(user_preferences_formulae)
         preferences_filter: Callable = lambda x: np.any([f(x) for f in preferences_filters], axis=0)
-        preferred_recipes = data[data.apply(preferences_filter, axis=1)]
+        preferred_recipes = test[test.apply(preferences_filter, axis=1)]
 
         print("\nRecipes accepted according to user's preferences: " + str(preferred_recipes.shape[0]) + '\n\n\n')
 
+        total_proposed_recipes, total_liked_recipes = [], []
         for i, prescription in enumerate(prescriptions_filters):
-            prescribed = data[data.apply(prescription, axis=1)]
-            preferred_and_prescribed_recipes = prescribed[prescribed.apply(preferences_filter, axis=1)]
-            print("Recipes compliant with prescription " + str(i + 1) + ": " + str(prescribed.shape[0]))
-            n = str(preferred_and_prescribed_recipes.shape[0])
-            print("Recipes compliant to both prescriptions and user's preferences: " + n)
-            map_id_num_ing = {k: v for k, v in zip(recipes_with_ingredients, data.T.sum())}
-            proposed_recipes_id = [recipes_with_ingredients[i] for i in preferred_and_prescribed_recipes.index]
+            prescribed = test[test.apply(prescription, axis=1)]
+            liked_and_prescribed = prescribed[prescribed.apply(preferences_filter, axis=1)].copy()
+            proposed_recipes_id = [recipes_with_ingredients[i] for i in liked_and_prescribed.index]
             titles = recipes.loc[recipes['Recipe ID'].isin(proposed_recipes_id)].iloc[:, :2]
-            titles['NumIngredients'] = [map_id_num_ing[i] for i in titles['Recipe ID']]
-            titles = titles.sort_values('NumIngredients', ascending=True)
-            pd.set_option('display.max_columns', 10)
-            print('\n\nBest top recipes')
-            print(titles.iloc[:10, :])
-            print('\n\n' + 50 * '-' + '\n\n')
-            file_name = (self.user + self.style + '_' + self.prescription + '_number_' + str(i+1) + '.csv')
-            titles.iloc[:, 0].to_csv(RESULTS_PATH / file_name, index_label=False, index=False)
+            num_ing = [map_id_num_ing[i] for i in titles['Recipe ID']]
+            liked_and_prescribed['NumIngredients'] = num_ing
+            liked_and_prescribed = liked_and_prescribed.sort_values('NumIngredients', ascending=True)
+            liked_and_prescribed = liked_and_prescribed.iloc[:MAX_PROPOSED_RECIPES_PER_PRESCRIPTION, :]
+            print("Recipes compliant with prescription " + str(i + 1) + ": " + str(prescribed.shape[0]))
+            d = liked_and_prescribed.shape[0]
+            n = liked_and_prescribed.loc[liked_and_prescribed['target'] == 1].shape[0]
+            print("Recipes compliant to both prescriptions and user's preferences: " + str(d))
+            total_proposed_recipes.append(d)
+            total_liked_recipes.append(n)
+            if d > 0:
+                print('Prescription ' + str(i + 1) + ' accuracy: ' + str(n/d))
+            else:
+                print('Prescription ' + str(i + 1) + ': no proposed recipes!')
+
+            if LOG_ADDITIONAL_INFO:
+                titles['NumIngredients'] = num_ing
+                titles = titles.sort_values('NumIngredients', ascending=True)
+                pd.set_option('display.max_columns', 10)
+                print('\n\nBest top recipes')
+                print(titles.iloc[:10, :])
+                print('\n\n' + 50 * '-' + '\n\n')
+                file_name = (self.user + self.style + '_' + self.prescription + '_number_' + str(i+1) + '.csv')
+                titles.iloc[:, 0].to_csv(RESULTS_PATH / file_name, index_label=False, index=False)
+
+        d = sum(total_proposed_recipes)
+        n = sum(total_liked_recipes)
+        total_proposed_recipes.append(d)
+        total_liked_recipes.append(n)
+        accuracies = [n / d if d > 0 else 0 for n, d in zip(total_liked_recipes, total_proposed_recipes)]
+        print('Total accuracy: ' + str(accuracies[-1]))
+        result = DataFrame([total_proposed_recipes, total_liked_recipes, accuracies]).T
+        file_name = self.user + self.style + '_' + self.prescription + '.csv'
+        result.to_csv(RESULTS_PATH / file_name, index_label=False, index=False, header=['proposed', 'liked', 'accuracy'])
 
 
 setup(

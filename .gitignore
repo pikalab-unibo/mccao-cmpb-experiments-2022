@@ -1,5 +1,6 @@
 # Generable file exclded
 *.h5
+network*.csv
 user*.csv
 *dataset*.csv
 *rules*.csv
