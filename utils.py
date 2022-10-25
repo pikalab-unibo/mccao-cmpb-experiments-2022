@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from psyki.logic.datalog import DatalogFormula, Expression
 from psyki.logic.datalog.grammar import optimize_datalog_formula, Nary
+from psyki.logic.datalog.grammar.adapters.tuppy import prolog_to_datalog
 from tensorflow.keras import Input, Model
 from tensorflow.keras.layers import Dense
 from resources.dataset import PATH as DATASET_PATH
@@ -39,6 +40,10 @@ def formula_to_callable(formula: DatalogFormula, rules: dict[str: list[DatalogFo
             return lambda x: x[clause.lhs.name] > clause.rhs.value if clause.op == '>' else x[clause.lhs.name] <= clause.rhs.value
         elif isinstance(clause, Nary):
             return lambda x: np.any([formula_to_callable(rule, rules)(x) for rule in rules[clause.name]], axis=0)
+        elif isinstance(clause.rhs, Nary):
+            return lambda x: np.any([formula_to_callable(rule, rules)(x) for rule in rules[clause.rhs.name]], axis=0)
+        else:
+            raise Exception('Not able to convert formula into filter')
 
     optimize_datalog_formula(formula)
     rhs = formula.rhs
@@ -126,3 +131,12 @@ def get_categories_ingredients_map(files: list[str]):
             else:
                 categories_ingredients[category] = new_ingredients
     return categories_ingredients
+
+
+def get_liked_recipes(theory, dataset):
+    user_preferences_formulae = prolog_to_datalog(theory)
+    user_preferences_formulae = [f for f in user_preferences_formulae if f.lhs.arg.last.name == 'positive']
+    preferences_filters = formulae_to_callables(user_preferences_formulae)
+    preferences_filter: Callable = lambda x: np.any([f(x) for f in preferences_filters], axis=0)
+    liked_recipes = dataset[dataset.apply(preferences_filter, axis=1)]
+    return liked_recipes
