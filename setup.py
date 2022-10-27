@@ -28,8 +28,8 @@ SEED = 0
 T = 1
 P = 0.05
 MAX_PROPOSED_RECIPES_PER_PRESCRIPTION = 20
-MAX_INGREDIENTS_IN_RULES = 10
-MAX_EXTRACTED_RULES = 50
+MAX_INGREDIENTS_IN_RULES = 10  # None = no limits
+MAX_EXTRACTED_RULES = 50  # None = no limits
 TRAIN_RATIO = 0.5
 FIRST_LAYER = 16
 HIDDEN_LAYER = 8
@@ -73,11 +73,11 @@ class RunAll(distutils.cmd.Command):
 
         for user in range(1, 4):
             for style in range(1, len(USERS_STYLES) + 1):
-                #system('python -m setup generate_users_preferences -u ' + str(user) + ' -s ' + str(style))
-                #system('python -m setup generate_users_scores -u ' + str(user) + ' -s ' + str(style))
-                #system('python -m setup generate_dataset -u ' + str(user) + ' -s ' + str(style))
-                #system('python -m setup build_and_train_nn -u ' + str(user) + ' -s ' + str(style))
-                #system('python -m setup extract_rules -u ' + str(user) + ' -s ' + str(style))
+                system('python -m setup generate_users_preferences -u ' + str(user) + ' -s ' + str(style))
+                system('python -m setup generate_users_scores -u ' + str(user) + ' -s ' + str(style))
+                system('python -m setup generate_dataset -u ' + str(user) + ' -s ' + str(style))
+                system('python -m setup build_and_train_nn -u ' + str(user) + ' -s ' + str(style))
+                system('python -m setup extract_rules -u ' + str(user) + ' -s ' + str(style))
                 for prescription in range(1, len(PRESCRIPTIONS) + 1):
                     system('python -m setup propose_recipes -u ' + str(user) + ' -s ' + str(style) + ' -p ' + str(prescription))
 
@@ -275,7 +275,7 @@ class GenerateDataset(distutils.cmd.Command):
         min_rxu = rxu.min()
         p = DataFrame([random.uniform(0, 1) for _ in range(rxu.shape[0])])
         x = DataFrame((rxu - min_rxu) / (max_rxu - min_rxu))
-        labels = ((rxu > np.quantile(rxu, 0.75)) + (DataFrame(rxu > 0) * x > p)).astype(int)  # np.log10(rxu.shape[0])
+        labels = ((rxu > np.quantile(rxu, 0.75)) + (DataFrame(rxu > 0) * x > p)).astype(int)
         dataset = recipes.join(labels)
         dataset.columns = list(recipes.columns) + list(['target', ])
         print('positive class: ' + str(dataset.loc[dataset['target'] == 1].shape[0]))
@@ -349,10 +349,18 @@ class ExtractRules(distutils.cmd.Command):
         with open(PREFERENCES_PATH / (self.user + self.style + '.csv'), 'w') as file:
             for rule in theory.clauses:
                 file.write(pretty_clause(rule) + '.\n')
+        # Accuracy
         preferred_recipes = get_liked_recipes(theory, test)
         true_liked_recipes = preferred_recipes[preferred_recipes['target'] == 1].shape[0]
-        result = DataFrame([true_liked_recipes / preferred_recipes.shape[0]])
-        result.to_csv(PREFERENCES_PATH / (self.user + self.style + '_accuracy.csv'), index_label=False, index=False, header=['accuracy'])
+        accuracy = true_liked_recipes / preferred_recipes.shape[0]
+        # Fidelity
+        model_predictions = DataFrame(network.predict(test.iloc[:, :-1]), columns=['new_target'], index=test.index)
+        preferred_recipes = preferred_recipes.join(model_predictions)
+        expected_liked_recipes = preferred_recipes[preferred_recipes['new_target'] > 0.5].shape[0]
+        fidelity = expected_liked_recipes / preferred_recipes.shape[0]
+
+        result = DataFrame([[accuracy], [fidelity]]).T
+        result.to_csv(PREFERENCES_PATH / (self.user + self.style + '_accuracy.csv'), index_label=False, index=False, header=['accuracy', 'fidelity'])
 
 
 class ProposeRecipes(distutils.cmd.Command):
@@ -462,11 +470,11 @@ class ComputeStatistics(distutils.cmd.Command):
     def run(self) -> None:
         # Generate latex code for a table summarising the accuracy of the neural networks per users
         #
-        # users |   accuracy    |   rule_accuracy
-        # u1    |               |
-        # u2    |               |
-        # u3    |               |
-        results = 'users & net accuracy & rules accuracy\n'
+        # users |   accuracy    |   rules accuracy   |   rules fidelity
+        # u1    |               |                   |
+        # u2    |               |                   |
+        # u3    |               |                   |
+        results = 'users & net accuracy & rules accuracy & rules fidelity\n'
         all_stats = []
         i = 1
         for u in range(1, 4):
@@ -476,13 +484,13 @@ class ComputeStatistics(distutils.cmd.Command):
                 net_data = pd.read_csv(MODEL_PATH / ('network_' + user + style + '.csv'))
                 rule_data = pd.read_csv(PREFERENCES_PATH / (user + style + '_accuracy.csv'))
                 accuracy = net_data.iloc[-1, -1]
-                rule_accuracy = rule_data.iloc[0, 0]
-                all_stats.append([round(accuracy, 4), round(rule_accuracy, 4)])
-                results += ' & '.join(['user ' + str(i), str(round(accuracy, 4)), str(round(rule_accuracy, 4))]) + r'\\' + '\n'
+                rule_accuracy, rule_fidelity = rule_data.iloc[0, :]
+                all_stats.append([round(accuracy, 4), round(rule_accuracy, 4), round(rule_fidelity, 4)])
+                results += ' & '.join(['user ' + str(i), str(round(accuracy, 4)), str(round(rule_accuracy, 4)),  str(round(rule_fidelity, 4))]) + r'\\' + '\n'
                 i += 1
             results += r'\hline' + '\n'
         stats = DataFrame(all_stats)
-        results += 'all & ' + str(round(stats.iloc[:, 0].mean(), 4)) + ' & ' + str(round(stats.iloc[:, 1].mean(), 4)) + r'\\' + '\n'
+        results += 'all & ' + str(round(stats.iloc[:, 0].mean(), 4)) + ' & ' + str(round(stats.iloc[:, 1].mean(), 4) )+ ' & ' + str(round(stats.iloc[:, 2].mean(), 4)) + r'\\' + '\n'
         with open('table_net_rule_accuracy.csv', "w") as file:
             file.write(results)
 
