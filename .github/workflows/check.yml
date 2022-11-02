@@ -1,0 +1,66 @@
+name: check
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+      - 'feature/**'
+env:
+  PROJECT_NAME: mccao-cmpb-experiments-2022
+  WORKFLOW: check
+jobs:
+  run-unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+        python-version:
+          - '3.9.0'
+          - '3.9.10'
+          - '3.9.13'
+    runs-on: ${{ matrix.os }}
+    name: Run tests on Python ${{ matrix.python-version }}, on ${{ matrix.os }}
+    timeout-minutes: 45
+    concurrency:
+      group: ${{ github.workflow }}-run-unit-tests-${{ matrix.python-version }}-${{ matrix.os }}-${{ github.event.number || github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Restore Python dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Download dataset
+        run: python -m setup download_datasets
+
+      - name: Generate common knowledge base
+        run: python -m setup generate_common_kb
+
+      - name: Generate user preferences
+        run: python -m setup generate_users_preferences
+
+      - name: Generate user scores
+        run: python -m setup generate_users_scores
+
+      - name: Generate user dataset
+        run: python -m setup generate_dataset
+
+      - name: Train ML model
+        run: python -m setup build_and_train_nn
+
+      - name: Extract user rules
+        run: python -m setup extract_rules
+
+      - name: Propose recipes
+        run: python -m setup propose_recipes
