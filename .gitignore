@@ -4,6 +4,7 @@ network*.csv
 user*.csv
 *dataset*.csv
 *rules*.csv
+liked*.csv
 0*.csv
 table*.csv
 

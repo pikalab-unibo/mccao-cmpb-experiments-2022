@@ -25,17 +25,18 @@ from psyki.logic.prolog.grammar.adapters.tuppy import file_to_prolog, text_to_pr
 
 
 SEED = 0
-T = 1
-P = 0.05
+# Extraction hyper-parameters
 MAX_PROPOSED_RECIPES_PER_PRESCRIPTION = 20
 MAX_INGREDIENTS_IN_RULES = 10  # None = no limits
 MAX_EXTRACTED_RULES = 50  # None = no limits
+# ML hyper-parameters
 TRAIN_RATIO = 0.5
 FIRST_LAYER = 16
 HIDDEN_LAYER = 8
 OUTPUT_LAYER = 1
 EPOCHS = 20
 BATCH = 32
+# Additional hyper-parameters
 RECIPES_LIST_FILE = '01_Recipe_Details.csv'
 INGREDIENTS_FILE = '02_Ingredients.csv'
 COMPOUND_INGREDIENTS_FILE = '03_Compound_Ingredients.csv'
@@ -56,6 +57,9 @@ sys.setrecursionlimit(2000)  # because the number of ingredients is greater than
 
 
 class RunAll(distutils.cmd.Command):
+    """
+    Run all commands in sequence for each user and prescription.
+    """
     description = 'run all the experiments'
     user_options = []
 
@@ -278,8 +282,10 @@ class GenerateDataset(distutils.cmd.Command):
         labels = ((rxu > np.quantile(rxu, 0.75)) + (DataFrame(rxu > 0) * x > p)).astype(int)
         dataset = recipes.join(labels)
         dataset.columns = list(recipes.columns) + list(['target', ])
-        print('positive class: ' + str(dataset.loc[dataset['target'] == 1].shape[0]))
+        ratio = dataset.loc[dataset['target'] == 1].shape[0] / dataset.shape[0]
+        print('positive class ratio: ' + str(ratio))
         dataset.to_csv(DATASET_PATH / ('dataset_' + self.user + self.style + '.csv'), index=False)
+        DataFrame([ratio]).to_csv(DATASET_PATH / ('liked_recipes_' + self.user + self.style + '.csv'), index=False, header=['liked_recipes_ratio'])
 
 
 class TrainNN(distutils.cmd.Command):
@@ -457,7 +463,11 @@ class ProposeRecipes(distutils.cmd.Command):
         result.to_csv(RESULTS_PATH / file_name, index_label=False, index=False, header=['proposed', 'liked', 'accuracy'])
 
 
+# Post test analysis
 class ComputeStatistics(distutils.cmd.Command):
+    """
+    Generate latex-like tables that summarise the results.
+    """
     description = 'compute statistics upon the results'
     user_options = []
 
@@ -470,11 +480,11 @@ class ComputeStatistics(distutils.cmd.Command):
     def run(self) -> None:
         # Generate latex code for a table summarising the accuracy of the neural networks per users
         #
-        # users |   accuracy    |   rules accuracy   |   rules fidelity
-        # u1    |               |                   |
-        # u2    |               |                   |
-        # u3    |               |                   |
-        results = 'users & net accuracy & rules accuracy & rules fidelity\n'
+        # users |   liked recipes   |   accuracy    |   rules accuracy   |   rules fidelity
+        # u1    |                   |               |                    |
+        # u2    |                   |               |                    |
+        # u3    |                   |               |                    |
+        results = 'users & liked recipes & net accuracy & rules accuracy & rules fidelity\n'
         all_stats = []
         i = 1
         for u in range(1, 4):
@@ -483,14 +493,16 @@ class ComputeStatistics(distutils.cmd.Command):
                 style = USERS_STYLES[int(s) - 1]
                 net_data = pd.read_csv(MODEL_PATH / ('network_' + user + style + '.csv'))
                 rule_data = pd.read_csv(PREFERENCES_PATH / (user + style + '_accuracy.csv'))
-                accuracy = net_data.iloc[-1, -1]
-                rule_accuracy, rule_fidelity = rule_data.iloc[0, :]
-                all_stats.append([round(accuracy, 4), round(rule_accuracy, 4), round(rule_fidelity, 4)])
-                results += ' & '.join(['user ' + str(i), str(round(accuracy, 4)), str(round(rule_accuracy, 4)),  str(round(rule_fidelity, 4))]) + r'\\' + '\n'
+                class_data = pd.read_csv(DATASET_PATH / ('liked_recipes_' + user + style + '.csv'))
+                accuracy = round(net_data.iloc[-1, -1], 4)
+                rule_accuracy, rule_fidelity = round(rule_data.iloc[0, 0], 4), round(rule_data.iloc[0, 1], 4)
+                liked_ratio = round(class_data.iloc[-1, -1], 4)
+                all_stats.append([liked_ratio, accuracy, rule_accuracy, rule_fidelity])
+                results += ' & '.join(['user ' + str(i), str(liked_ratio), str(accuracy),  str(rule_accuracy), str(rule_fidelity)]) + r'\\' + '\n'
                 i += 1
             results += r'\hline' + '\n'
         stats = DataFrame(all_stats)
-        results += 'all & ' + str(round(stats.iloc[:, 0].mean(), 4)) + ' & ' + str(round(stats.iloc[:, 1].mean(), 4) )+ ' & ' + str(round(stats.iloc[:, 2].mean(), 4)) + r'\\' + '\n'
+        results += 'all & ' + ' & '.join(str(round(x, 4)) for x in stats.mean(axis=0)) + r'\\' + '\n'
         with open('table_net_rule_accuracy.csv', "w") as file:
             file.write(results)
 
