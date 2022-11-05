@@ -2,11 +2,15 @@ import re
 from typing import Callable
 import numpy as np
 import pandas as pd
+import tensorflow as tf
 from psyki.logic.datalog import DatalogFormula, Expression
 from psyki.logic.datalog.grammar import optimize_datalog_formula, Nary
 from psyki.logic.datalog.grammar.adapters.tuppy import prolog_to_datalog
 from tensorflow.keras import Input, Model
 from tensorflow.keras.layers import Dense
+from tensorflow.keras.backend import clip, sum, epsilon
+
+
 from resources.dataset import PATH as DATASET_PATH
 
 DEFAULT_INPUT_LAYER = 16
@@ -29,7 +33,7 @@ def create_nn(input_size, neurons_per_layer=None) -> Model:
         x = Dense(neurons, activation='relu')(x)
     x = Dense(neurons_per_layer[-1], activation='sigmoid')(x)
     network = Model(input_layer, x)
-    network.compile(optimizer='adam', metrics='accuracy', loss='binary_crossentropy')
+    network.compile(optimizer='adam', metrics=['accuracy', precision], loss='binary_crossentropy')
     return network
 
 
@@ -133,10 +137,63 @@ def get_categories_ingredients_map(files: list[str]):
     return categories_ingredients
 
 
-def get_liked_recipes(theory, dataset):
+def get_liked_recipes(theory, dataset, like=True):
+    label = 'positive' if like else 'negative'
     user_preferences_formulae = prolog_to_datalog(theory)
-    user_preferences_formulae = [f for f in user_preferences_formulae if f.lhs.arg.last.name == 'positive']
+    user_preferences_formulae = [f for f in user_preferences_formulae if f.lhs.arg.last.name == label]
     preferences_filters = formulae_to_callables(user_preferences_formulae)
     preferences_filter: Callable = lambda x: np.any([f(x) for f in preferences_filters], axis=0)
     liked_recipes = dataset[dataset.apply(preferences_filter, axis=1)]
     return liked_recipes
+
+
+def tp(y_true, y_pred):
+    return sum(tf.round(clip(y_true * y_pred, 0, 1)))
+
+
+def recall(y_true, y_pred):
+    true_positives = tp(y_true, y_pred)
+    possible_positives = sum(tf.round(clip(y_true, 0, 1)))
+    recall = true_positives / (possible_positives + epsilon())
+    return recall
+
+
+def precision(y_true, y_pred):
+    true_positives = tp(y_true, y_pred)
+    predicted_positives = sum(tf.round(clip(y_pred, 0, 1)))
+    precision = true_positives / (predicted_positives + epsilon())
+    return precision
+
+
+def f1(y_true, y_pred):
+    p = precision(y_true, y_pred)
+    r = recall(y_true, y_pred)
+    return 2*((p*r)/(p+r+epsilon()))
+
+
+def formula_to_ingredients(formula):
+    body = formula.rhs
+    has, not_has = [], []
+    if len(body.nary) > 0:
+        for element in body.nary:
+            if element.op == '=<':
+                not_has.append(element.lhs.name)
+            else:
+                has.append(element.lhs.name)
+    return has, not_has
+
+
+def formula_size(formula):
+    body = formula.rhs
+    if len(body.nary) > 0:
+        return len(body.nary)
+    elif body.rhs is not None:
+        return 2
+    else:
+        return 1
+
+
+def sort_formulae_by_size(formulae):
+    for formula in formulae:
+        optimize_datalog_formula(formula)
+    return sorted(formulae, key=lambda x: formula_size(x), reverse=False)
